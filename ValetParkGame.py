@@ -25,10 +25,10 @@ start_ticks=pygame.time.get_ticks()
 GameOver = False
 space_pressed = 0
 parkingfont = pygame.font.Font('freesansbold.ttf', 20)
-Gametimer = GameTime
-pygame.display.set_caption("Valet-Park")
-icon = pygame.image.load('Resources/valet_icon.png')
-pygame.display.set_icon(icon)
+Gametimer = GameTime #game time set in config. This the overall time of the game
+pygame.display.set_caption("Valet-Park") # Caption for Game
+icon = pygame.image.load('Resources/valet_icon.png') # Game Icon File
+pygame.display.set_icon(icon) # Game Icon
 cwd = os.getcwd()
 spots = pygame.sprite.GroupSingle()
 spots.add(Spots())
