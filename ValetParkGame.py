@@ -9,13 +9,23 @@ from Player import Player
 from Func import *
 from config import *
 
+
+# Issues to resolve:
+#  Cars collision function
+# bug where if entrance blocked parking lot cars dont drive correctly
+# work on the game time logic
+# Rework car driving code
+
+
+
+
 # Intialize the pygame
 pygame.init()
 # all of the game configs
 clock = pygame.time.Clock()
 screen = pygame.display.set_mode((1366, 768)) # resolution is 720p
 parkingfont = pygame.font.Font('freesansbold.ttf', 20)
-GameTimeFont = pygame.font.SysFont('calibri', 40)
+GameTimeFont = pygame.font.SysFont('calibri', 30)
 background = pygame.image.load('Resources/Map.png')
 PlayerX = 60 # Player starting position x
 PlayerY = 250 # Player starting position y
@@ -125,6 +135,7 @@ while running:
                 if event.key == pygame.K_UP: Car_selected.activeforward = False
                 if event.key == pygame.K_DOWN: Car_selected.activebackward = False
     if GameOver:
+        # GameOver Screen
         screen.fill((0,0,0))
         GameOverRender = GameTimeFont.render("Game Over", True, (255, 255, 255))
         screen.blit(GameOverRender,(600, 384))

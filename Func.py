@@ -11,18 +11,17 @@ def GameTimer(seconds,GameTime,GameTimeFont,screen,entrance_blocked):
     if entrance_blocked != 0:
         Gameseconds = GameTime - round(seconds)
         GameTimeRender = GameTimeFont.render(str(Gameseconds), True, (0, 0, 0))
-        pygame.draw.rect(screen, (255,255,255), (1085, 5,75, 45))
+        pygame.draw.rect(screen, (255,255,255), (1085, 5,80, 35))
         screen.blit(GameTimeRender,(1100, 10))
     if entrance_blocked:
         Gameseconds = GameTime - int((1.2*(round(seconds))))
         GameTimeRender = GameTimeFont.render(str(Gameseconds), True, (136, 8, 8))
-        pygame.draw.rect(screen, (255,255,255), (1085, 5,75, 45))
+        pygame.draw.rect(screen, (255,255,255), (1085, 5,80, 35))
         screen.blit(GameTimeRender,(1100, 10))
         ParkingBlockedRender = ParkingBlockedFont.render("Entrance Blocked!", True, (136, 8, 8))
         pygame.draw.rect(screen, (255,255,255), (180, 5,125, 25))
         screen.blit(ParkingBlockedRender,(190, 10))
         
-
     if Gameseconds < 0:
         return True
     else:
@@ -36,9 +35,7 @@ def import_folder(path):
             img_surface = pygame.image.load(full_path).convert_alpha()
             img_surface = pygame.transform.scale(img_surface, (38, 72))
             surface_list.append(img_surface)
-
     return surface_list
-
 
 class Spots(pygame.sprite.Sprite):
     def __init__(self):

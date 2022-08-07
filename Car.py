@@ -53,7 +53,6 @@ class Client(pygame.sprite.Sprite):
         self.ClientWalkAnimation(screen)
 
 
-
 class Car(pygame.sprite.Sprite):
     def __init__(self,ParkingSpot,CarImgIndex,Clientnumberstr):
         super().__init__()
