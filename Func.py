@@ -40,7 +40,7 @@ def import_folder(path):
 class Spots(pygame.sprite.Sprite):
     def __init__(self):
         super().__init__()
-        self.Entrance_spot_img = pygame.image.load('Resources\Entrance_spot.png').convert_alpha()
+        self.Entrance_spot_img = pygame.image.load('Resources/Entrance_spot.png').convert_alpha()
         self.image = pygame.transform.scale(self.Entrance_spot_img, (250, 120))
         self.rect = self.image.get_rect(center = (0,177))
 

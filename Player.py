@@ -5,10 +5,10 @@ import pygame
 class Player(pygame.sprite.Sprite):
     def __init__(self):
         super().__init__()
-        PlayerImgRight = pygame.image.load('Resources\Players\PlayerRight1.png').convert_alpha()
-        PlayerImgLeft = pygame.image.load('Resources\Players\PlayerLeft1.png').convert_alpha()
-        PlayerImgUp = pygame.image.load('Resources\Players\PlayerUp1.png').convert_alpha()
-        PlayerImgDown = pygame.image.load('Resources\Players\PlayerDown1.png').convert_alpha()
+        PlayerImgRight = pygame.image.load('Resources/Players/PlayerRight1.png').convert_alpha()
+        PlayerImgLeft = pygame.image.load('Resources/Players/PlayerLeft1.png').convert_alpha()
+        PlayerImgUp = pygame.image.load('Resources/Players/PlayerUp1.png').convert_alpha()
+        PlayerImgDown = pygame.image.load('Resources/Players/PlayerDown1.png').convert_alpha()
         self.PlayerImg = [PlayerImgRight,PlayerImgLeft,PlayerImgUp,PlayerImgDown]
         self.PlayerImgIndex = 3
         self.active = True

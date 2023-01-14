@@ -24,7 +24,7 @@ class Client(pygame.sprite.Sprite):
         self.ClientExited = False
     
     def import_assets(self):
-        assets_path = 'Resources/Clients'
+        assets_path = './Resources/Clients'
         self.clientimg_assets = { 'person1':[],'person2':[],'person3':[],'person4':[],'person5':[],'person6':[],'person7':[],'person8':[],'person9':[],'person10':[],'person11':[],'person12':[],'person13':[],'person14':[],'person15':[],'person16':[],'person17':[]}
         for clientimgs in self.clientimg_assets.keys():
             full_path = assets_path +"/" +clientimgs
@@ -56,19 +56,19 @@ class Client(pygame.sprite.Sprite):
 class Car(pygame.sprite.Sprite):
     def __init__(self,ParkingSpot,CarImgIndex,Clientnumberstr):
         super().__init__()
-        CarImgCyellow = pygame.image.load('Resources\Cars\lr_classic_yellow.png').convert_alpha()
-        CarImgCcyan = pygame.image.load('Resources\Cars\lr_classic_cyan.png').convert_alpha()
-        CarImgCred = pygame.image.load('Resources\Cars\lr_classic_red.png').convert_alpha()
-        CarImgCblue = pygame.image.load('Resources\Cars\lr_classic_blue.png').convert_alpha()
-        CarImgCpink = pygame.image.load('Resources\Cars\lr_classic_pink.png').convert_alpha()        
-        CarImgCghost = pygame.image.load('Resources\Cars\lr_classic_ghost.png').convert_alpha()
-        CarImgMred = pygame.image.load('Resources\Cars\lr_modern_red.png').convert_alpha()
-        CarImgMblue = pygame.image.load('Resources\Cars\lr_modern_blue.png').convert_alpha()
-        CarImgMpink = pygame.image.load('Resources\Cars\lr_modern_pink.png').convert_alpha()        
-        CarImgMghost = pygame.image.load('Resources\Cars\lr_modern_ghost.png').convert_alpha()
-        CarImgSyellow = pygame.image.load('Resources\Cars\lr_super_yellow.png').convert_alpha()
-        CarImgSpink = pygame.image.load('Resources\Cars\lr_super_pink.png').convert_alpha()        
-        CarImgSghost = pygame.image.load('Resources\Cars\lr_super_ghost.png').convert_alpha()
+        CarImgCyellow = pygame.image.load('Resources/Cars/lr_classic_yellow.png').convert_alpha()
+        CarImgCcyan = pygame.image.load('Resources/Cars/lr_classic_cyan.png').convert_alpha()
+        CarImgCred = pygame.image.load('Resources/Cars/lr_classic_red.png').convert_alpha()
+        CarImgCblue = pygame.image.load('Resources/Cars/lr_classic_blue.png').convert_alpha()
+        CarImgCpink = pygame.image.load('Resources/Cars/lr_classic_pink.png').convert_alpha()        
+        CarImgCghost = pygame.image.load('Resources/Cars/lr_classic_ghost.png').convert_alpha()
+        CarImgMred = pygame.image.load('./Resources/Cars/lr_modern_red.png').convert_alpha()
+        CarImgMblue = pygame.image.load('Resources/Cars/lr_modern_blue.png').convert_alpha()
+        CarImgMpink = pygame.image.load('Resources/Cars/lr_modern_pink.png').convert_alpha()        
+        CarImgMghost = pygame.image.load('Resources/Cars/lr_modern_ghost.png').convert_alpha()
+        CarImgSyellow = pygame.image.load('Resources/Cars/lr_super_yellow.png').convert_alpha()
+        CarImgSpink = pygame.image.load('Resources/Cars/lr_super_pink.png').convert_alpha()        
+        CarImgSghost = pygame.image.load('Resources/Cars/lr_super_ghost.png').convert_alpha()
         self.CarImg = [CarImgCyellow,CarImgCcyan,CarImgCred,CarImgCghost,CarImgCblue,CarImgCpink,CarImgMred,CarImgMghost,CarImgMblue,CarImgMpink,CarImgSyellow,CarImgSghost,CarImgSpink]
         self.CarImgIndex = CarImgIndex
         self.original_image =  pygame.transform.rotate(pygame.transform.scale(self.CarImg[int(self.CarImgIndex)], (70, 150)),-90)
