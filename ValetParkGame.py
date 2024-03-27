@@ -8,11 +8,13 @@ import os
 from Player import Player
 from Func import *
 from config import *
+import time
 
 
 # Issues to resolve:
 #  Cars collision function
 # bug where if entrance blocked parking lot cars dont drive correctly
+# car wont drive once i re enter
 # work on the game time logic
 # Rework car driving code
 
@@ -109,8 +111,15 @@ while running:
                         Car_selected = pygame.sprite.spritecollideany(player.sprite,car)
                         player.sprite.active = False
                         Car_selected.active = True
+                        # Car_selected.angle = 0
+                        # Car_selected.direction = 0
+
+
                         player.sprite.rect.x = -300
                         Car_select= True
+
+
+
                     else:
                         if space_pressed == 1 and Car_select:
                             player.sprite.active = True
