@@ -2,12 +2,12 @@ import pygame
 from random import randint,choice
 
 from pygame.constants import USEREVENT
-from ParkingSpots import DrawParkingSpots
-from Car import Car
+from src.ParkingSpots import DrawParkingSpots
+from src.Car import Car
 import os
-from Player import Player
-from Func import *
-from config import *
+from src.Player import Player
+from src.utils import *
+from src.config import *
 import time
 
 
@@ -66,7 +66,6 @@ pygame.time.set_timer(Car_exit,20000) #time in milliseconds
 # Similarly for the client exiting (keeping at max 2 exits)  
 while running:
     seconds=(pygame.time.get_ticks())/1000
-    print(seconds)
     screen.blit(background, (0, 0))
     for event in pygame.event.get():
         # Quit game
@@ -111,9 +110,6 @@ while running:
                         Car_selected = pygame.sprite.spritecollideany(player.sprite,car)
                         player.sprite.active = False
                         Car_selected.active = True
-                        # Car_selected.angle = 0
-                        # Car_selected.direction = 0
-
 
                         player.sprite.rect.x = -300
                         Car_select= True

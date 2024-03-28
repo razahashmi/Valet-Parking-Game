@@ -1,6 +1,6 @@
 from typing import KeysView
 import pygame
-from Func import import_folder
+from .utils import import_folder
 import os
 from random import randint
 from math import sin, radians, degrees, copysign
