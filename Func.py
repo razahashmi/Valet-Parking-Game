@@ -22,10 +22,7 @@ def GameTimer(seconds,GameTime,GameTimeFont,screen,entrance_blocked):
         pygame.draw.rect(screen, (255,255,255), (180, 5,125, 25))
         screen.blit(ParkingBlockedRender,(190, 10))
         
-    if Gameseconds < 0:
-        return True
-    else:
-        return False
+    return Gameseconds <= 0
 
 def import_folder(path):
     surface_list = []

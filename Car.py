@@ -89,6 +89,10 @@ class Car(pygame.sprite.Sprite):
         self.Client = pygame.sprite.GroupSingle()
         self.Client.add(Client(Clientnumberstr))
 
+    def stop(self):
+        # Example method to stop the car
+        self.activeforward = False
+
     def set_rotation(self):
         if self.direction == 1: 
             self.angle -= self.rotation_speed

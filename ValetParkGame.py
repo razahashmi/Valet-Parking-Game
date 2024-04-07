@@ -17,6 +17,15 @@ from config import *
 # Rework car driving code
 
 
+def check_car_collisions():
+    # Iterate over cars to check for collisions with other cars
+    for car1 in car:
+        for car2 in car:
+            if car1 != car2 and pygame.sprite.collide_rect(car1, car2):
+                # Handle collision by stopping both cars
+                car1.stop()
+                car2.stop()
+                print(f"Collision detected between {car1} and {car2}")
 
 
 # Intialize the pygame
@@ -66,6 +75,7 @@ while running:
     seconds=(pygame.time.get_ticks())/1000
     print(seconds)
     screen.blit(background, (0, 0))
+    check_car_collisions()
     for event in pygame.event.get():
         # Quit game
         if event.type == pygame.QUIT:
