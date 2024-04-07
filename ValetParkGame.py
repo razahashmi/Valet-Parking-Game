@@ -2,17 +2,19 @@ import pygame
 from random import randint,choice
 
 from pygame.constants import USEREVENT
-from ParkingSpots import DrawParkingSpots
-from Car import Car
+from src.ParkingSpots import DrawParkingSpots
+from src.Car import Car
 import os
-from Player import Player
-from Func import *
-from config import *
+from src.Player import Player
+from src.utils import *
+from src.config import *
+import time
 
 
 # Issues to resolve:
 #  Cars collision function
 # bug where if entrance blocked parking lot cars dont drive correctly
+# car wont drive once i re enter
 # work on the game time logic
 # Rework car driving code
 
@@ -73,7 +75,6 @@ pygame.time.set_timer(Car_exit,20000) #time in milliseconds
 # Similarly for the client exiting (keeping at max 2 exits)  
 while running:
     seconds=(pygame.time.get_ticks())/1000
-    print(seconds)
     screen.blit(background, (0, 0))
     check_car_collisions()
     for event in pygame.event.get():
@@ -119,8 +120,12 @@ while running:
                         Car_selected = pygame.sprite.spritecollideany(player.sprite,car)
                         player.sprite.active = False
                         Car_selected.active = True
+
                         player.sprite.rect.x = -300
                         Car_select= True
+
+
+
                     else:
                         if space_pressed == 1 and Car_select:
                             player.sprite.active = True
