@@ -17,22 +17,23 @@ class Player(pygame.sprite.Sprite):
 
     def player_input(self):
         keys = pygame.key.get_pressed()
+        player_speed = 3  # Reduced from 5 to 3 for better control
         if keys[pygame.K_UP]:
             self.PlayerImgIndex = 2
             self.image = pygame.transform.scale(self.PlayerImg[int(self.PlayerImgIndex)], (40, 40))
-            self.rect.y += -3 
+            self.rect.y += -player_speed
         if keys[pygame.K_DOWN]:
             self.PlayerImgIndex = 3
             self.image = pygame.transform.scale(self.PlayerImg[int(self.PlayerImgIndex)], (40, 40))    
-            self.rect.y += 3 
+            self.rect.y += player_speed
         if keys[pygame.K_RIGHT]:
             self.PlayerImgIndex = 0
             self.image = pygame.transform.scale(self.PlayerImg[int(self.PlayerImgIndex)], (40, 40))        
-            self.rect.x += 3 
+            self.rect.x += player_speed
         if keys[pygame.K_LEFT]:
             self.PlayerImgIndex = 1
             self.image = pygame.transform.scale(self.PlayerImg[int(self.PlayerImgIndex)], (40, 40))      
-            self.rect.x += -3 
+            self.rect.x += -player_speed
 
     def boundaries(self):      
         if self.rect.x <= 90:

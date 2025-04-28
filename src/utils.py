@@ -6,23 +6,33 @@ from os import walk
 ParkingSpot = [1001,1002,1003,1004,1005,1006,1007,1008,1009,1010,1011,1012,1013,1014,1015,1016,1017,1018]
 
 
-def GameTimer(seconds,GameTime,GameTimeFont,screen,entrance_blocked):
+def GameTimer(seconds, GameTime, GameTimeFont, screen, entrance_blocked):
+    """Handle game time with proper entrance blocked penalty"""
     ParkingBlockedFont = pygame.font.SysFont('calibri', 15)
-    if entrance_blocked != 0:
-        Gameseconds = GameTime - round(seconds)
-        GameTimeRender = GameTimeFont.render(str(Gameseconds), True, (0, 0, 0))
-        pygame.draw.rect(screen, (255,255,255), (1085, 5,80, 35))
-        screen.blit(GameTimeRender,(1100, 10))
+    
+    # Calculate remaining time with entrance blocked penalty
+    elapsed_time = seconds
     if entrance_blocked:
-        Gameseconds = GameTime - int((1.2*(round(seconds))))
-        GameTimeRender = GameTimeFont.render(str(Gameseconds), True, (136, 8, 8))
-        pygame.draw.rect(screen, (255,255,255), (1085, 5,80, 35))
-        screen.blit(GameTimeRender,(1100, 10))
-        ParkingBlockedRender = ParkingBlockedFont.render("Entrance Blocked!", True, (136, 8, 8))
-        pygame.draw.rect(screen, (255,255,255), (180, 5,125, 25))
-        screen.blit(ParkingBlockedRender,(190, 10))
-        
-    return Gameseconds <= 0
+        # Time drains 20% faster when entrance is blocked
+        elapsed_time = seconds * 1.2
+    
+    remaining_time = max(0, GameTime - int(elapsed_time))
+    time_color = (136, 8, 8) if entrance_blocked else (0, 0, 0)
+    
+    # Show blocked entrance warning if needed
+    if entrance_blocked:
+        ParkingBlockedRender = ParkingBlockedFont.render("Entrance Blocked!", True, time_color)
+        pygame.draw.rect(screen, (255, 255, 255), (180, 5, 125, 25))
+        screen.blit(ParkingBlockedRender, (190, 10))
+    
+    # Render time
+    time_str = str(remaining_time)
+    time_width = GameTimeFont.size(time_str)[0]
+    pygame.draw.rect(screen, (255, 255, 255), (1085, 5, max(80, time_width + 30), 35))
+    GameTimeRender = GameTimeFont.render(time_str, True, time_color)
+    screen.blit(GameTimeRender, (1100, 10))
+    
+    return remaining_time <= 0
 
 def import_folder(path):
     surface_list = []
