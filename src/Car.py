@@ -15,7 +15,8 @@ class Client(pygame.sprite.Sprite):
     
     def __init__(self, clientnumber_string):
         super().__init__()
-        self.clientnumber_string = clientnumber_string
+        # Convert clientnumber_string to string if it's not already
+        self.clientnumber_string = str(clientnumber_string)
         self.import_assets()
         self.setup_animations()
         self.ClientX = 90
@@ -30,13 +31,29 @@ class Client(pygame.sprite.Sprite):
         cache_key = (self.clientnumber_string, 38, 72)
         
         if cache_key not in Client._scaled_images:
-            full_path = assets_path + "/" + self.clientnumber_string
-            raw_images = import_folder(full_path)
-            # Pre-scale all images for better performance
-            Client._scaled_images[cache_key] = [
-                pygame.transform.scale(img, (38, 72))
-                for img in raw_images
-            ]
+            try:
+                full_path = assets_path + "/" + self.clientnumber_string
+                raw_images = import_folder(full_path)
+                
+                # Check if we got any images
+                if not raw_images:
+                    print(f"Warning: No images found in {full_path}. Using fallback image.")
+                    # Create a fallback image
+                    fallback_image = pygame.Surface((38, 72))
+                    fallback_image.fill((200, 100, 100))  # Red color for visibility
+                    Client._scaled_images[cache_key] = [fallback_image]
+                else:
+                    # Pre-scale all images for better performance
+                    Client._scaled_images[cache_key] = [
+                        pygame.transform.scale(img, (38, 72))
+                        for img in raw_images
+                    ]
+            except Exception as e:
+                print(f"Error loading client images: {e}. Using fallback image.")
+                # Create a fallback image
+                fallback_image = pygame.Surface((38, 72))
+                fallback_image.fill((200, 100, 100))  # Red color for visibility
+                Client._scaled_images[cache_key] = [fallback_image]
         
         self.ClientImg = Client._scaled_images[cache_key]
 
@@ -44,6 +61,15 @@ class Client(pygame.sprite.Sprite):
         self.frame = 0
     
     def update_animation(self, current_time):
+        # Add safety check to prevent ZeroDivisionError
+        if not self.ClientImg or len(self.ClientImg) == 0:
+            # Re-try loading images or create a fallback image
+            fallback_image = pygame.Surface((38, 72))
+            fallback_image.fill((200, 100, 100))  # Red color for visibility
+            self.ClientImg = [fallback_image]
+            print(f"Warning: ClientImg is empty for client {self.clientnumber_string}. Using fallback image.")
+            return
+        
         if current_time - self.last_update > self.animation_speed:
             self.frame = (self.frame + 1) % len(self.ClientImg)
             self.last_update = current_time
@@ -96,8 +122,18 @@ class Car(pygame.sprite.Sprite):
         CarImgSpink = pygame.image.load('Resources/Cars/lr_super_pink.png').convert_alpha()        
         CarImgSghost = pygame.image.load('Resources/Cars/lr_super_ghost.png').convert_alpha()
         self.CarImg = [CarImgCyellow,CarImgCcyan,CarImgCred,CarImgCghost,CarImgCblue,CarImgCpink,CarImgMred,CarImgMghost,CarImgMblue,CarImgMpink,CarImgSyellow,CarImgSghost,CarImgSpink]
-        self.CarImgIndex = CarImgIndex
-        self.original_image = pygame.transform.rotate(pygame.transform.scale(self.CarImg[int(self.CarImgIndex)], (70, 150)),-90)
+        
+        # Safety check to ensure CarImgIndex is valid
+        try:
+            self.CarImgIndex = int(CarImgIndex)
+            if self.CarImgIndex < 0 or self.CarImgIndex >= len(self.CarImg):
+                print(f"Warning: CarImgIndex {self.CarImgIndex} out of range. Using default index 0.")
+                self.CarImgIndex = 0
+        except (ValueError, TypeError):
+            print(f"Warning: Invalid CarImgIndex {CarImgIndex}. Using default index 0.")
+            self.CarImgIndex = 0
+            
+        self.original_image = pygame.transform.rotate(pygame.transform.scale(self.CarImg[self.CarImgIndex], (70, 150)),-90)
         self.image = self.original_image
         self.mask = pygame.mask.from_surface(self.image)  # Create initial mask
         self.rect = self.image.get_rect(center = (-100,160))
