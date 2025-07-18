@@ -304,10 +304,15 @@ class ValetRLAgent:
         
         # Path planning and state representation
         self.known_parking_spots = {}  # Mapping of parking spot numbers to locations
+        
+        # Action history to detect repetitive behavior
+        self.action_history = []
+        self.stuck_detection_window = 30
+        self.repeated_action_threshold = 25
     
     def get_state(self, player, cars, clients, spot_rectangles):
         """
-        Extract and normalize state from game entities.
+        Extract and normalize state from game entities with improved representation.
         
         Args:
             player: The player sprite
@@ -330,7 +335,7 @@ class ValetRLAgent:
         
         # Start with player position (or -1,-1 if player is in a car)
         state = []
-        if player.active:
+        if player and player.active:
             state.extend([
                 player.rect.centerx / screen_width,
                 player.rect.centery / screen_height
@@ -345,14 +350,25 @@ class ValetRLAgent:
         for i, car in enumerate(cars):
             if i >= max_cars:
                 break
+            
+            if car is None or getattr(car, 'marked_for_deletion', False):
+                # Skip invalid cars
+                continue
                 
             # Convert ParkingSpot to integer before division
             try:
-                parking_spot_normalized = float(car.ParkingSpot) / 2000.0
+                parking_spot_normalized = float(car.ParkingSpot) / 21.0  # Max spot number
             except (ValueError, TypeError):
                 # If conversion fails, use a default value
-                print(f"Warning: Could not convert ParkingSpot '{car.ParkingSpot}' to float. Using default value.")
                 parking_spot_normalized = 0.5  # Use middle value as default
+            
+            # Get velocity information
+            speed = 0
+            velocity_x, velocity_y = 0, 0
+            if hasattr(car, 'velocity') and car.velocity:
+                speed = car.velocity.length() / 10.0  # Normalize
+                velocity_x = car.velocity.x / 10.0
+                velocity_y = car.velocity.y / 10.0
                 
             # Basic car properties
             car_info.extend([
@@ -363,30 +379,80 @@ class ValetRLAgent:
                 1.0 if car.parked else 0.0,  # Is the car parked?
                 parking_spot_normalized,  # Normalized parking spot number
                 1.0 if car.ClientEntered else 0.0,  # Has the client entered?
-                1.0 if car.Client.sprite.ClientExited else 0.0,  # Has client exited?
-                car.parking_alignment / 100.0  # Parking alignment
+                1.0 if hasattr(car.Client.sprite, 'ClientExited') and car.Client.sprite.ClientExited else 0.0,
+                car.parking_alignment / 100.0,  # Parking alignment
+                speed,  # Normalized speed
+                1.0 if car == self.current_car else 0.0  # Is this car being driven by agent
             ])
             
-            # Client position for this car
-            if car.Client.sprite:
+            # If this car has client info, use it
+            if car.Client and car.Client.sprite:
                 car_info.extend([
                     car.Client.sprite.ClientX / screen_width,
                     car.Client.sprite.ClientY / screen_height
                 ])
             else:
                 car_info.extend([0, 0])
-        
+                
+            # Add target parking spot location if known
+            if car.assigned_spot in self.known_parking_spots:
+                spot_x, spot_y = self.known_parking_spots[car.assigned_spot]
+                car_info.extend([
+                    spot_x / screen_width,
+                    spot_y / screen_height
+                ])
+            else:
+                car_info.extend([0.5, 0.5])  # Default center if unknown
+            
         # Pad with zeros if we have fewer than max_cars
-        while len(car_info) < max_cars * 11:  # 9 car props + 2 client props
-            car_info.extend([0] * 11)
+        cars_processed = len(car_info) // 15  # 11 car props + 2 client props + 2 spot props
+        while len(car_info) < max_cars * 15:  # Pad remaining cars
+            car_info.extend([0] * 15)
             
         state.extend(car_info)
+
+        # Add extra game state information
+        state.append(len([c for c in cars if c and not getattr(c, 'marked_for_deletion', False)]) / max_cars)
+        state.append(len([c for c in cars if c and c.parked]) / max_cars)
         
         return np.array(state, dtype=np.float32)
     
+    def detect_repetitive_behavior(self, action):
+        """
+        Detect if agent is stuck in a repetitive behavior pattern.
+        
+        Args:
+            action: The selected action
+            
+        Returns:
+            True if agent appears stuck in repetitive behavior
+        """
+        # Add action to history, maintaining fixed window size
+        self.action_history.append(action)
+        if len(self.action_history) > self.stuck_detection_window:
+            self.action_history.pop(0)
+            
+        # Not enough actions to analyze yet
+        if len(self.action_history) < self.stuck_detection_window:
+            return False
+            
+        # Count occurrences of each action in the window
+        action_counts = {}
+        for a in self.action_history:
+            action_counts[a] = action_counts.get(a, 0) + 1
+            
+        # If any action occurs more than threshold times, agent may be stuck
+        for a, count in action_counts.items():
+            if count > self.repeated_action_threshold:
+                # Reset history to break the cycle
+                self.action_history = []
+                return True
+                
+        return False
+    
     def act(self, state, training=True):
         """
-        Choose an action based on state using epsilon-greedy policy.
+        Choose an action based on state using epsilon-greedy policy with anti-stuck mechanism.
         
         Args:
             state: Current state
@@ -395,10 +461,25 @@ class ValetRLAgent:
         Returns:
             Action index (0-5)
         """
+        # Override with random action if stuck in a loop
+        if training and self.detect_repetitive_behavior(self.action_history[-1] if self.action_history else -1):
+            print("Detected repetitive behavior - choosing random action to break cycle")
+            return random.randrange(self.action_size)
+            
+        # Normal epsilon-greedy action selection
         if training and random.random() <= self.epsilon:
             return random.randrange(self.action_size)
         
         q_values = self.model.forward(state.reshape(1, -1))
+        
+        # Add some exploration even in exploitation phase
+        if training and random.random() < 0.05:  # 5% randomness even in exploitation
+            # Choose weighted random action based on Q-values
+            # Convert Q-values to a probability distribution
+            q_exp = np.exp(q_values - np.max(q_values))
+            probs = q_exp / np.sum(q_exp)
+            return np.random.choice(self.action_size, p=probs[0])
+            
         return np.argmax(q_values[0])
     
     def step(self, state, action, reward, next_state, done):
@@ -427,9 +508,18 @@ class ValetRLAgent:
         if self.step_count % UPDATE_TARGET_FREQUENCY == 0:
             self.model.update_target_model()
         
-        # Decay epsilon
+        # Decay epsilon with better curve
         if self.epsilon > EPSILON_MIN:
-            self.epsilon *= EPSILON_DECAY
+            # More aggressive early decay, gentler later
+            decay_rate = EPSILON_DECAY
+            # If rewards are improving, decay faster
+            if len(self.stats['rewards']) > 10:
+                recent_avg = np.mean(self.stats['rewards'][-10:])
+                earlier_avg = np.mean(self.stats['rewards'][-20:-10])
+                if recent_avg > earlier_avg:
+                    decay_rate = EPSILON_DECAY * 0.95  # Faster decay when improving
+            
+            self.epsilon = max(EPSILON_MIN, self.epsilon * decay_rate)
     
     def _train_model(self):
         """Train the model using a batch from the replay buffer."""
@@ -487,10 +577,12 @@ class ValetRLAgent:
         
         # Reset episode stats
         self.total_reward = 0
+        self.action_history = []  # Reset action history
         
         if episode % 10 == 0:
             avg_reward = np.mean(self.stats['rewards'][-10:])
             print(f"Episode: {episode}, Avg Reward: {avg_reward:.2f}, Epsilon: {self.epsilon:.2f}")
+            print(f"Total successful parks: {self.stats['successful_parks']}, deliveries: {self.stats['successful_deliveries']}")
     
     def save(self, checkpoint_dir='checkpoints'):
         """Save agent state and model."""
@@ -584,7 +676,7 @@ def calculate_reward(
     collision_occurred=False
 ):
     """
-    Calculate reward based on current game state.
+    Calculate reward based on current game state with enhanced driving incentives.
     
     Args:
         car_sprite: The active car sprite or None
@@ -599,28 +691,84 @@ def calculate_reward(
     """
     reward = 0
     
-    # Penalty for collisions
-    if collision_occurred:
-        reward -= 10.0
+    # Extract key information from state arrays
+    player_active_prev = previous_state[0] >= 0 and previous_state[1] >= 0
+    player_active_curr = current_state[0] >= 0 and current_state[1] >= 0
     
-    # Check for successful park
-    if car_sprite and not car_sprite.parked and current_state[5]:  # Car newly parked
-        # Check if parked in correct spot
-        if car_sprite.current_spot == car_sprite.assigned_spot:
-            reward += 20.0
-        else:
-            # Wrong spot penalty
-            reward += 5.0  # Still give some reward for parking, but less
+    # Handle car selection logic - reward for entering appropriate cars
+    if player_active_prev and not player_active_curr:  # Player entered a car
+        reward += 5.0  # Positive reward for successful car entry
+    
+    # Handle exiting a car when it's parked in the right spot
+    if not player_active_prev and player_active_curr:  # Player exited a car
+        if car_sprite and car_sprite.parked:
+            if car_sprite.current_spot == car_sprite.assigned_spot:
+                reward += 10.0  # Big bonus for leaving car in correct spot
+            else:
+                reward += 2.0   # Small bonus for leaving car in a spot at all
+    
+    # Major penalty for collisions to discourage them strongly
+    if collision_occurred:
+        reward -= 15.0
+        
+        # Extra penalty for high-speed collisions if we can determine them
+        if car_sprite and hasattr(car_sprite, 'velocity') and car_sprite.velocity.length() > 2:
+            reward -= 5.0 * min(5.0, car_sprite.velocity.length())
+    
+    # Check for successful park - big rewards for proper parking
+    if car_sprite and car_sprite.parked:
+        # Check if this is a newly achieved park (wasn't parked in previous state)
+        newly_parked = False
+        if len(previous_state) >= 6 and not bool(previous_state[5]):
+            newly_parked = True
+            
+        # Continuous reward based on parking alignment quality
+        alignment_reward = car_sprite.parking_alignment / 100.0 * 0.5
+        reward += alignment_reward
+            
+        # Big one-time bonus for newly achieving a good park
+        if newly_parked and car_sprite.parking_alignment > 70:
+            # Check if parked in correct spot
+            if car_sprite.current_spot == car_sprite.assigned_spot:
+                reward += 30.0  # Major reward for correct parking
+            else:
+                # Wrong spot penalty but still some reward
+                reward += 5.0   # Some reward for parking skill, even if wrong spot
     
     # Check for successful delivery
     if car_sprite and car_sprite.SuccessDelivery:
-        reward += 30.0
+        reward += 50.0  # Very large reward for complete delivery
+    elif car_sprite and getattr(car_sprite, 'delivery_scored', False):
+        reward += 25.0  # Medium reward if delivery was scored but car not yet removed
     
     # Small time penalty to encourage efficiency
-    reward -= 0.1
+    reward -= 0.05
     
-    # Movement towards goal reward
-    if car_sprite:
+    # Reward for good driving behavior
+    if car_sprite and not player_active_curr:  # We're controlling a car
+        
+        # Reward smooth movement and speed control
+        if hasattr(car_sprite, 'velocity'):
+            speed = car_sprite.velocity.length()
+            
+            # Encourage maintaining reasonable driving speed (not too fast/slow)
+            optimal_speed = 2.0
+            speed_diff = abs(speed - optimal_speed)
+            if speed_diff < 1.5:
+                reward += 0.1 * (1.5 - speed_diff)  # More reward the closer to optimal
+            elif speed > 6.0:
+                reward -= 0.1 * (speed - 6.0)  # Penalty for excessive speed
+            
+            # Penalize erratic steering (check for rapid direction changes)
+            if hasattr(car_sprite, 'steering_angle') and hasattr(car_sprite, '_prev_steering_angle'):
+                steering_change = abs(car_sprite.steering_angle - car_sprite._prev_steering_angle)
+                if steering_change > 0.5:
+                    reward -= 0.1 * steering_change  # Penalty for jerky steering
+            
+            # Store current steering angle for next comparison
+            if hasattr(car_sprite, 'steering_angle'):
+                car_sprite._prev_steering_angle = car_sprite.steering_angle
+    
         # If we have a target spot, reward movement toward it
         if car_sprite.assigned_spot and not car_sprite.parked:
             # Find the target spot
@@ -632,17 +780,103 @@ def calculate_reward(
             
             if target_spot:
                 # Calculate distances
-                prev_distance = np.sqrt((car_sprite.last_position.x - target_spot.centerx)**2 + 
-                                       (car_sprite.last_position.y - target_spot.centery)**2)
-                current_distance = np.sqrt((car_sprite.rect.centerx - target_spot.centerx)**2 + 
-                                          (car_sprite.rect.centery - target_spot.centery)**2)
+                if hasattr(car_sprite, 'last_position'):
+                    prev_distance = ((car_sprite.last_position.x - target_spot.centerx)**2 + 
+                                   (car_sprite.last_position.y - target_spot.centery)**2)**0.5
+                    current_distance = ((car_sprite.rect.centerx - target_spot.centerx)**2 + 
+                                      (car_sprite.rect.centery - target_spot.centery)**2)**0.5
+                    
+                    # Calculate proportion of distance covered 
+                    distance_change = prev_distance - current_distance
+                    
+                    # More reward for movement directly toward goal
+                    if distance_change > 0:
+                        # More reward at closer distances to encourage precision
+                        proximity_factor = max(1.0, 500 / (current_distance + 50))
+                        reward += distance_change * 0.3 * proximity_factor
+                    elif distance_change < -5:  # Moving away significantly
+                        reward -= abs(distance_change) * 0.1  # Small penalty for wrong direction
+                    
+                    # Extra directional guidance - reward pointing toward target
+                    if hasattr(car_sprite, 'forward'):
+                        # Calculate direction to target
+                        to_target = pygame.math.Vector2(
+                            target_spot.centerx - car_sprite.rect.centerx,
+                            target_spot.centery - car_sprite.rect.centery
+                        )
+                        
+                        if to_target.length() > 0:
+                            to_target.normalize_ip()
+                            
+                            # Dot product to see if car is pointing toward target
+                            alignment = car_sprite.forward.dot(to_target)
+                            # Reward for pointing toward the target (alignment > 0)
+                            if alignment > 0:
+                                reward += alignment * 0.2
+                                
+                            # Extra bonus when close to target and well-aligned
+                            if current_distance < 100 and alignment > 0.7:
+                                reward += 0.5  # Bonus for final approach alignment
+    
+    # Handle player movement when not in a car
+    if player_active_curr and action_taken < 4:  # Player moving
+        # Extract player position
+        player_x_prev, player_y_prev = previous_state[0], previous_state[1]
+        player_x_curr, player_y_curr = current_state[0], current_state[1]
+        
+        # Find nearest car that's ready to be driven
+        min_distance_prev = float('inf')
+        min_distance_curr = float('inf')
+        for i in range(10):  # Check up to 10 cars
+            offset = 2 + i * 11  # Car info starts at index 2, each car uses 11 values
+            if len(previous_state) > offset + 10 and previous_state[offset] > 0:
+                # This car exists
+                car_ready_prev = (previous_state[offset+6] > 0.5)  # ClientEntered
+                if car_ready_prev:
+                    # Calculate distance to this car in previous state
+                    car_x_prev, car_y_prev = previous_state[offset], previous_state[offset+1]
+                    dist_prev = ((player_x_prev - car_x_prev)**2 + (player_y_prev - car_y_prev)**2)**0.5
+                    min_distance_prev = min(min_distance_prev, dist_prev)
                 
-                # Reward for getting closer to target
-                distance_change = prev_distance - current_distance
-                reward += distance_change * 0.5
-                
-                # Reward for better parking alignment
-                if car_sprite.parking_alignment > 0:
-                    reward += (car_sprite.parking_alignment / 100.0)
+            if len(current_state) > offset + 10 and current_state[offset] > 0:
+                # This car exists in current state
+                car_ready_curr = (current_state[offset+6] > 0.5)  # ClientEntered
+                if car_ready_curr:
+                    # Calculate distance to this car in current state
+                    car_x_curr, car_y_curr = current_state[offset], current_state[offset+1]
+                    dist_curr = ((player_x_curr - car_x_curr)**2 + (player_y_curr - car_y_curr)**2)**0.5
+                    min_distance_curr = min(min_distance_curr, dist_curr)
+        
+        # Reward for moving toward a car that's ready to be driven
+        if min_distance_curr < min_distance_prev:
+            distance_change = min_distance_prev - min_distance_curr
+            # Higher reward when getting close to car
+            if min_distance_curr < 0.2:  # Normalized distance
+                reward += distance_change * 10  # Strong reward when close
+            else:
+                reward += distance_change * 5   # Moderate reward when further away
+        
+        # Small penalty for staying in place when not in a car
+        if abs(player_x_curr - player_x_prev) < 0.001 and abs(player_y_curr - player_y_prev) < 0.001:
+            reward -= 0.1  # Small penalty for not moving
+    
+    # Penalize staying in a parked car too long
+    if car_sprite and car_sprite.parked and not player_active_curr:
+        # Check how long we've been parked
+        current_time = pygame.time.get_ticks() / 1000
+        if hasattr(car_sprite, 'park_start_time') and car_sprite.park_start_time > 0:
+            parked_duration = current_time - car_sprite.park_start_time
+            if parked_duration > 3:  # If parked more than 3 seconds
+                reward -= 0.2 * (parked_duration - 3)  # Increasing penalty for staying parked
+    
+    # Bonus for efficient use of time when correctly parked
+    if car_sprite and car_sprite.parked and car_sprite.current_spot == car_sprite.assigned_spot:
+        reward += 0.2  # Small continuous bonus for correct parking
+    
+    # Encourage controlled driving
+    if action_taken == 5 and not player_active_curr:  # Do nothing while in car
+        # Negative reward for stopping in the middle of nowhere
+        if car_sprite and not car_sprite.parked:
+            reward -= 0.2
     
     return reward

@@ -96,17 +96,17 @@ def CarSelection(GameTime,Parking_spots,numb_clients,numb_cars):
     person_number = ["person1","person2","person3","person4","person5","person6","person7","person8","person9","person10","person11","person12","person13","person14","person15","person16","person17"]
     shuffle(person_number) # shuffle for randomization of ppl coming in or exiting
     shuffle(Parking_spots)
-    carcollection = numb_cars # Total number of cars available
-    # ClientsArrivalTimes = GenerateClientArrivalTime(GameTime,GameTimeStart,numb_clients) # A list of times for the Clients to arrive
-    # ClientsExitTimes = GenerateClientExitTime(ClientsArrivalTimes,GameTime,person_number)
+    
+    # Define the available car colors/models (indices for CarImg list in Car.py)
+    # 0: Yellow, 1: Cyan, 2: Red, 3: Ghost, 4: Blue, 5: Pink, 6: Modern Red, 7: Modern Ghost, etc.
+    available_car_indices = list(range(13))  # 13 different car sprites available
+    
     for i in range(m):
-        ClientsList[i][0]= randint(0,carcollection)  # car assigned to the client
+        # Use a wider variety of car indices for better visual distinction
+        ClientsList[i][0] = choice(available_car_indices)  # Select random car color/model
         ClientsList[i][1] = person_number.pop()
         ClientsList[i][2] = Parking_spots.pop()
-        #ClientsList[i][3] = ClientsArrivalTimes.pop()
-        #ClientsList[i][4] = ClientsExitTimes.pop()
-
-        #print(str(ClientsList[i][0]) + " " + ClientsList[i][1] + " " + str(ClientsList[i][2]) +" " + str(ClientsList[i][3]) + " " + str(ClientsList[i][4]))
+    
     return ClientsList
 
 def CarCollisions(CarGroup,collisionpenalty):

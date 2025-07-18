@@ -25,11 +25,145 @@ class GameState(Enum):
     RL_PLAYING = 7   # New state for trained RL agent playing
 
 # Issues to resolve:
-#  Cars collision function
-# bug where if entrance blocked parking lot cars dont drive correctly
-# car wont drive once i re enter
+#  Cars collision function - FIXED
+# bug where if entrance blocked parking lot cars dont drive correctly - FIXED
+# car wont drive once i re enter - FIXED
 # work on the game time logic
-# Rework car driving code
+# Rework car driving code - IMPROVED
+
+# Added proper cleanup for cars that are marked for deletion
+def cleanup_cars():
+    """Remove cars that have been marked for deletion and are safe to remove.
+    Returns the number of cars removed."""
+    removed_count = 0
+    global car
+    
+    # Create a new sprite group without the cars marked for removal
+    new_car_group = pygame.sprite.Group()
+    
+    for car_sprite in car:
+        if car_sprite.safe_to_remove:
+            removed_count += 1
+            # Clean up any references to this car
+            if hasattr(car_sprite, 'Client') and car_sprite.Client:
+                car_sprite.Client.empty()  # Remove client sprites
+        else:
+            new_car_group.add(car_sprite)
+    
+    # Replace the old group with the new one if any cars were removed
+    if removed_count > 0:
+        car = new_car_group
+    
+    return removed_count
+
+
+def draw_parking_guide(car_sprite):
+    """Draw a guide line from the car to its assigned parking spot."""
+    if not car_sprite.parked:
+        # Find the car's assigned spot
+        for spot in spot_cache:
+            if spot["number"] == car_sprite.assigned_spot:
+                # Draw a line from car to spot
+                pygame.draw.line(
+                    screen,
+                    (0, 255, 0),
+                    car_sprite.rect.center,
+                    spot["rect"].center,
+                    2
+                )
+                
+                # Draw a circle around the target spot
+                pygame.draw.circle(
+                    screen,
+                    (0, 255, 0),
+                    spot["rect"].center,
+                    40,
+                    2
+                )
+                break
+
+
+def draw_rl_training_info():
+    """Draw RL agent training statistics on screen."""
+    # Display episode info
+    episode_text = GameTimeFont.render(f"Episode: {rl_current_episode}/{rl_max_episodes}", True, (255, 255, 255))
+    screen.blit(episode_text, (1000, 10))
+    
+    # Display exploration rate
+    epsilon_text = GameTimeFont.render(f"Explore rate: {rl_agent.epsilon:.2f}", True, (255, 255, 255))
+    screen.blit(epsilon_text, (1000, 40))
+    
+    # Display successful parks in this episode
+    parks_text = GameTimeFont.render(f"Parks: {rl_successful_parks}", True, (255, 255, 255))
+    screen.blit(parks_text, (1000, 70))
+    
+    # Display successful deliveries in this episode
+    delivs_text = GameTimeFont.render(f"Deliveries: {rl_successful_deliveries}", True, (255, 255, 255))
+    screen.blit(delivs_text, (1000, 100))
+
+
+def calculate_reward(score, collision_occurred=False, car_parked_correctly=False, 
+                     delivery_completed=False, time_remaining=0):
+    """Calculate reward for RL agent based on game state."""
+    reward = 0
+    
+    # Base reward based on game score changes
+    reward += score * 0.01  # Small continuous reward based on score
+    
+    # Penalties
+    if collision_occurred:
+        reward -= 5.0  # Major penalty for collisions
+    
+    # Rewards for achievements
+    if car_parked_correctly:
+        reward += 10.0  # Significant reward for parking correctly
+    
+    if delivery_completed:
+        reward += 20.0  # Major reward for completing a delivery
+    
+    # Time pressure - small reward for having more time
+    reward += time_remaining * 0.01
+    
+    return reward
+
+
+class ActionMapper:
+    """Maps numeric actions from RL agent to game controls."""
+    
+    def __init__(self):
+        # Define possible actions
+        self.actions = {
+            0: {'move_left': False, 'move_right': False, 'move_up': False, 'move_down': False, 
+                'interact': False, 'forward': False, 'backward': False, 'left': False, 'right': False, 'exit_car': False},
+            1: {'move_left': True,  'move_right': False, 'move_up': False, 'move_down': False, 
+                'interact': False, 'forward': False, 'backward': False, 'left': False, 'right': False, 'exit_car': False},
+            2: {'move_left': False, 'move_right': True,  'move_up': False, 'move_down': False, 
+                'interact': False, 'forward': False, 'backward': False, 'left': False, 'right': False, 'exit_car': False},
+            3: {'move_left': False, 'move_right': False, 'move_up': True,  'move_down': False, 
+                'interact': False, 'forward': False, 'backward': False, 'left': False, 'right': False, 'exit_car': False},
+            4: {'move_left': False, 'move_right': False, 'move_up': False, 'move_down': True,  
+                'interact': False, 'forward': False, 'backward': False, 'left': False, 'right': False, 'exit_car': False},
+            5: {'move_left': False, 'move_right': False, 'move_up': False, 'move_down': False, 
+                'interact': True,  'forward': False, 'backward': False, 'left': False, 'right': False, 'exit_car': False},
+            6: {'move_left': False, 'move_right': False, 'move_up': False, 'move_down': False, 
+                'interact': False, 'forward': True,  'backward': False, 'left': False, 'right': False, 'exit_car': False},
+            7: {'move_left': False, 'move_right': False, 'move_up': False, 'move_down': False, 
+                'interact': False, 'forward': False, 'backward': True,  'left': False, 'right': False, 'exit_car': False},
+            8: {'move_left': False, 'move_right': False, 'move_up': False, 'move_down': False, 
+                'interact': False, 'forward': False, 'backward': False, 'left': True,  'right': False, 'exit_car': False},
+            9: {'move_left': False, 'move_right': False, 'move_up': False, 'move_down': False, 
+                'interact': False, 'forward': False, 'backward': False, 'left': False, 'right': True,  'exit_car': False},
+            10: {'move_left': False, 'move_right': False, 'move_up': False, 'move_down': False, 
+                 'interact': False, 'forward': False, 'backward': False, 'left': False, 'right': False, 'exit_car': True}
+        }
+    
+    def map_action(self, action_idx):
+        """Convert numeric action to control dictionary."""
+        if action_idx in self.actions:
+            return self.actions[action_idx]
+        else:
+            # Default to no action if invalid index
+            return self.actions[0]
 
 
 def get_cell(pos, cell_size=100):
@@ -44,6 +178,10 @@ def check_car_collisions():
     
     # Place cars in grid for efficient collision checking
     for car_sprite in car.sprites():
+        # Skip cars marked for deletion or far off-screen
+        if getattr(car_sprite, 'safe_to_remove', False) or car_sprite.rect.x > 2000:
+            continue
+            
         # Use integer division to get grid cell
         cell = get_cell(car_sprite.rect.center, cell_size)
         if cell not in grid:
@@ -78,61 +216,115 @@ def check_car_collisions():
                 if not car1.active and not car2.active:
                     continue
                 
+                # Skip if either car is safe to remove
+                if (getattr(car1, 'safe_to_remove', False) or 
+                    getattr(car2, 'safe_to_remove', False)):
+                    continue
+                
+                # Check if cars are too far to possibly collide (optimization)
+                distance = ((car1.rect.centerx - car2.rect.centerx)**2 + 
+                           (car1.rect.centery - car2.rect.centery)**2)**0.5
+                if distance > 150:  # If cars are more than 150px apart, they can't collide
+                    continue
+                
                 # Perform more accurate mask-based collision detection
-                if pygame.sprite.collide_mask(car1, car2):
-                    # When collision detected, handle collision for both cars
-                    collision_happened = False
-                    
-                    # The car that's moving should handle the collision
-                    if car1.active or car1.velocity.length() > 0.1:
-                        if car1.handle_collision(car2):
-                            collision_happened = True
-                            
-                    # Also let the second car handle collision
-                    if car2.active or car2.velocity.length() > 0.1:
-                        if car2.handle_collision(car1):
-                            collision_happened = True
-                    
-                    if collision_happened:
-                        penalty_applied = True
+                try:
+                    # Only attempt mask-based detection if both masks exist
+                    if car1.mask and car2.mask and pygame.sprite.collide_mask(car1, car2):
+                        # When collision detected, handle collision for both cars
+                        collision_happened = False
                         
-                        # Force cars apart if they're still overlapping
-                        offset = (car2.rect.x - car1.rect.x, car2.rect.y - car1.rect.y)
-                        if car1.mask.overlap(car2.mask, offset):
-                            # Calculate separation vector
-                            sep_vector = pygame.math.Vector2(
-                                car1.rect.centerx - car2.rect.centerx, 
-                                car1.rect.centery - car2.rect.centery
-                            )
-                            
-                            # Only separate if there's a valid direction
-                            if sep_vector.length() > 0:
-                                sep_vector.normalize_ip()
+                        # The car that's moving should handle the collision
+                        if car1.active or car1.velocity.length() > 0.1:
+                            car1.handle_collision(car2)
+                            collision_happened = True
                                 
-                                # Push cars apart more effectively
-                                push_amount = 5.0
-                                if car1.active and not car2.active:
-                                    # Active car hits parked car - push only active car
-                                    car1.rect.center = (
-                                        car1.rect.centerx + sep_vector.x * push_amount * 2,
-                                        car1.rect.centery + sep_vector.y * push_amount * 2
-                                    )
-                                elif car2.active and not car1.active:
-                                    # Active car hits parked car - push only active car
-                                    car2.rect.center = (
-                                        car2.rect.centerx - sep_vector.x * push_amount * 2,
-                                        car2.rect.centery - sep_vector.y * push_amount * 2
-                                    )
-                                else:
-                                    # Both or neither car active - push both
-                                    car1.rect.center = (
-                                        car1.rect.centerx + sep_vector.x * push_amount,
-                                        car1.rect.centery + sep_vector.y * push_amount
-                                    )
-                                    car2.rect.center = (
-                                        car2.rect.centerx - sep_vector.x * push_amount,
-                                        car2.rect.centery - sep_vector.y * push_amount
-                                    )
+                        # Also let the second car handle collision
+                        if car2.active or car2.velocity.length() > 0.1:
+                            car2.handle_collision(car1)
+                            collision_happened = True
+                        
+                        if collision_happened:
+                            penalty_applied = True
+                            
+                            # Record collision time for both cars
+                            current_time = pygame.time.get_ticks()
+                            car1.last_collision_time = current_time
+                            car2.last_collision_time = current_time
+                            
+                            # Force cars apart if they're still overlapping
+                            offset = (car2.rect.x - car1.rect.x, car2.rect.y - car1.rect.y)
+                            if car1.mask.overlap(car2.mask, offset):
+                                # Calculate separation vector
+                                sep_vector = pygame.math.Vector2(
+                                    car1.rect.centerx - car2.rect.centerx, 
+                                    car1.rect.centery - car2.rect.centery
+                                )
+                                
+                                # Only separate if there's a valid direction
+                                if sep_vector.length() > 0:
+                                    sep_vector.normalize_ip()
+                                    
+                                    # Push cars apart more effectively
+                                    push_amount = 5.0
+                                    if car1.active and not car2.active:
+                                        # Active car hits parked car - push only active car
+                                        car1.rect.center = (
+                                            car1.rect.centerx + sep_vector.x * push_amount * 2,
+                                            car1.rect.centery + sep_vector.y * push_amount * 2
+                                        )
+                                    elif car2.active and not car1.active:
+                                        # Active car hits parked car - push only active car
+                                        car2.rect.center = (
+                                            car2.rect.centerx - sep_vector.x * push_amount * 2,
+                                            car2.rect.centery - sep_vector.y * push_amount * 2
+                                        )
+                                    else:
+                                        # Both or neither car active - push both
+                                        car1.rect.center = (
+                                            car1.rect.centerx + sep_vector.x * push_amount,
+                                            car1.rect.centery + sep_vector.y * push_amount
+                                        )
+                                        car2.rect.center = (
+                                            car2.rect.centerx - sep_vector.x * push_amount,
+                                            car2.rect.centery - sep_vector.y * push_amount
+                                        )
+                except (AttributeError, TypeError) as e:
+                    # Handle missing mask or other attribute errors safely
+                    print(f"Collision detection error: {e}")
+                    continue
+    
+    # Check for out-of-bounds cars and fix their positions
+    screen_bounds = pygame.Rect(50, 75, 1266, 650)  # Safe screen area
+    for car_sprite in car.sprites():
+        # Skip safe-to-remove cars
+        if getattr(car_sprite, 'safe_to_remove', False):
+            continue
+            
+        # Check if car is outside screen bounds
+        if not screen_bounds.contains(car_sprite.rect):
+            # Car is out of bounds, check how far
+            if car_sprite.rect.centerx < -200 or car_sprite.rect.centerx > 1566 or \
+               car_sprite.rect.centery < -150 or car_sprite.rect.centery > 900:
+                # Car is way out of bounds, move it back to a safe position
+                print(f"Car was way out of bounds at {car_sprite.rect.center}, repositioning")
+                car_sprite.rect.center = (randint(300, 800), randint(200, 500))
+                car_sprite.velocity = pygame.math.Vector2(0, 0)
+            else:
+                # Car is just outside screen, nudge it back in
+                if car_sprite.rect.left < 50:
+                    car_sprite.rect.left = 50
+                    car_sprite.velocity.x = abs(car_sprite.velocity.x) * 0.5  # Bounce back
+                elif car_sprite.rect.right > 1316:
+                    car_sprite.rect.right = 1316
+                    car_sprite.velocity.x = -abs(car_sprite.velocity.x) * 0.5  # Bounce back
+                    
+                if car_sprite.rect.top < 75:
+                    car_sprite.rect.top = 75
+                    car_sprite.velocity.y = abs(car_sprite.velocity.y) * 0.5  # Bounce back
+                elif car_sprite.rect.bottom > 725:
+                    car_sprite.rect.bottom = 725
+                    car_sprite.velocity.y = -abs(car_sprite.velocity.y) * 0.5  # Bounce back
     
     return penalty_applied
 
@@ -332,18 +524,38 @@ def main():
     def spawn_new_car():
         nonlocal car_number  # Use nonlocal for car_number as well
         if car_number < number_cars_available:
+            # Check if too many cars already exist
+            if len(car.sprites()) >= 5:  # Limit number of cars in scene
+                return False
+                
             # Check if there's already a car near the entrance
+            entrance_area_occupied = False
             for existing_car in car.sprites():
                 if existing_car.rect.centerx < 200:  # Check if any car is in entrance area
-                    return False  # Don't spawn if entrance area is occupied
+                    entrance_area_occupied = True
+                    break
+                    
+            if entrance_area_occupied:
+                return False  # Don't spawn if entrance area is occupied
             
+            # Get car details
             clientnumstr, parkingspot, carindex = ClientsList[car_number]
-            new_car = Car(ParkingSpot=parkingspot, CarImgIndex=carindex, Clientnumberstr=clientnumstr, car_group=car)
-            car.add(new_car)
+            
+            # Create car first without adding to sprite group to test positions
+            test_car = Car(ParkingSpot=parkingspot, CarImgIndex=carindex, Clientnumberstr=clientnumstr, car_group=car)
+            
+            # Check if spawn position collides with any existing cars
+            for existing_car in car.sprites():
+                if pygame.sprite.collide_mask(test_car, existing_car):
+                    # Position would cause overlap, don't spawn
+                    return False
+            
+            # Position is clear, add to sprite group
+            car.add(test_car)
             car_number += 1
             return True
         return False
-        
+
     # Initialize variables for RL agent
     Car_selected = None
     rl_previous_state = None
@@ -361,7 +573,8 @@ def main():
                     nearest_car = None
                     min_distance = float('inf')
                     for car_sprite in car.sprites():
-                        if car_sprite.ClientEntered:  # Only consider cars that are ready to be driven
+                        # Only consider cars that are ready to be driven
+                        if car_sprite.ClientEntered and not getattr(car_sprite, 'marked_for_deletion', False):
                             distance = ((player_sprite.rect.centerx - car_sprite.rect.centerx)**2 + 
                                       (player_sprite.rect.centery - car_sprite.rect.centery)**2)**0.5
                             if distance < min_distance:
@@ -377,19 +590,49 @@ def main():
                         Car_select = True
                         Car_selected = nearest_car
                         space_pressed = 1
+                        print(f"Agent entered car at position: {nearest_car.rect.center}")
                 else:
-                    # Exit the car
-                    player_sprite.active = True
-                    Car_selected.set_active(False)
-                    player_sprite.rect.x = Car_selected.rect.x + 30
-                    player_sprite.rect.y = Car_selected.rect.y + 70
-                    Car_select = False
-                    space_pressed = 0
-                    Car_selected = None
+                    # Exit the car if we have one selected
+                    if Car_selected and not getattr(Car_selected, 'marked_for_deletion', False):
+                        player_sprite.active = True
+                        Car_selected.set_active(False)
+                        
+                        # Ensure player appears next to the car (not inside it)
+                        player_sprite.rect.x = Car_selected.rect.x + 30
+                        player_sprite.rect.y = Car_selected.rect.y + 70
+                        
+                        # Boundary check for player position after exiting
+                        if player_sprite.rect.x < 90: player_sprite.rect.x = 90
+                        if player_sprite.rect.x > 1250: player_sprite.rect.x = 1250
+                        if player_sprite.rect.y < 125: player_sprite.rect.y = 125
+                        if player_sprite.rect.y > 720: player_sprite.rect.y = 720
+                        
+                        Car_select = False
+                        space_pressed = 0
+                        Car_selected = None
+                        print("Agent exited car")
         else:
             # Handle movement controls
             if Car_select and Car_selected:
-                # Handle car controls
+                # First verify we have a valid car
+                if getattr(Car_selected, 'marked_for_deletion', False) or Car_selected.rect.x > 2000:
+                    # Something's wrong with this car, force exit
+                    player_sprite.active = True
+                    player_sprite.rect.x = 500  # Place player in a safe spot
+                    player_sprite.rect.y = 400
+                    Car_select = False
+                    space_pressed = 0
+                    Car_selected = None
+                    print("Forced exit from invalid car")
+                    return
+                    
+                # Handle car controls with smoother transitions
+                # Reset all controls first to prevent stuck keys
+                Car_selected.direction = 0
+                Car_selected.activeforward = False
+                Car_selected.activebackward = False
+                
+                # Apply the chosen action
                 if action == 0:  # UP
                     Car_selected.activeforward = True
                     Car_selected.activebackward = False
@@ -400,17 +643,21 @@ def main():
                     Car_selected.direction = -1
                 elif action == 3:  # RIGHT
                     Car_selected.direction = 1
-                else:  # Do nothing
-                    Car_selected.activeforward = False
-                    Car_selected.activebackward = False
-                    Car_selected.direction = 0
+                # Action 5 (do nothing) will keep all controls at their reset state
+                
+                # Debug car movement
+                if Car_selected.velocity.length() > 0.1:
+                    if random.random() < 0.01:  # Only print occasionally to prevent spam
+                        print(f"Car velocity: {Car_selected.velocity}, position: {Car_selected.rect.center}")
             else:
-                # Handle player movement
+                # Handle player movement with improved boundary checks
                 player_speed = 3
+                old_pos = (player_sprite.rect.x, player_sprite.rect.y)
+                
                 if action == 0:  # UP
                     player_sprite.PlayerImgIndex = 2
                     player_sprite.image = pygame.transform.scale(player_sprite.PlayerImg[int(player_sprite.PlayerImgIndex)], (40, 40))
-                    player_sprite.rect.y += -player_speed
+                    player_sprite.rect.y -= player_speed
                 elif action == 1:  # DOWN
                     player_sprite.PlayerImgIndex = 3
                     player_sprite.image = pygame.transform.scale(player_sprite.PlayerImg[int(player_sprite.PlayerImgIndex)], (40, 40))
@@ -418,11 +665,80 @@ def main():
                 elif action == 2:  # LEFT
                     player_sprite.PlayerImgIndex = 1
                     player_sprite.image = pygame.transform.scale(player_sprite.PlayerImg[int(player_sprite.PlayerImgIndex)], (40, 40))
-                    player_sprite.rect.x += -player_speed
+                    player_sprite.rect.x -= player_speed
                 elif action == 3:  # RIGHT
                     player_sprite.PlayerImgIndex = 0
                     player_sprite.image = pygame.transform.scale(player_sprite.PlayerImg[int(player_sprite.PlayerImgIndex)], (40, 40))
                     player_sprite.rect.x += player_speed
+                
+                # Apply boundaries directly here for immediate correction
+                if player_sprite.rect.x <= 90:
+                    player_sprite.rect.x = 90
+                elif player_sprite.rect.x >= 1250:
+                    player_sprite.rect.x = 1250
+                if player_sprite.rect.y <= 125:
+                    player_sprite.rect.y = 125
+                elif player_sprite.rect.y >= 720:
+                    player_sprite.rect.y = 720
+                
+                # Debug player movement
+                if player_sprite.rect.x != old_pos[0] or player_sprite.rect.y != old_pos[1]:
+                    if random.random() < 0.01:  # Only print occasionally
+                        print(f"Player moved from {old_pos} to {(player_sprite.rect.x, player_sprite.rect.y)}")
+
+    # Track when agent might be stuck
+    rl_stuck_counter = 0
+    rl_last_position = None
+    rl_max_stuck_frames = 300  # About 5 seconds at 60 FPS
+    rl_last_reward = 0
+    
+    # Helper function to check if agent is stuck
+    def check_if_agent_stuck(current_position, current_reward):
+        nonlocal rl_stuck_counter, rl_last_position, rl_last_reward
+        
+        # Initialize on first call
+        if rl_last_position is None:
+            rl_last_position = current_position
+            rl_last_reward = current_reward
+            return False
+            
+        # Check if position hasn't changed significantly
+        distance = ((current_position[0] - rl_last_position[0])**2 + 
+                   (current_position[1] - rl_last_position[1])**2)**0.5
+        
+        # Check if reward is decreasing
+        reward_change = current_reward - rl_last_reward
+        
+        # If barely moving and reward is declining, consider it potentially stuck
+        if distance < 5 and reward_change < -10:
+            rl_stuck_counter += 1
+        else:
+            rl_stuck_counter = max(0, rl_stuck_counter - 5)  # Decrease counter more quickly
+        
+        # Update tracking variables
+        rl_last_position = current_position
+        rl_last_reward = current_reward
+        
+        # Check if stuck for too long
+        return rl_stuck_counter > rl_max_stuck_frames
+        
+    # Helper function to clear entrance for RL agent
+    def clear_entrance_for_agent():
+        entrance_spots = spots.sprites()
+        if not entrance_spots:
+            return
+            
+        for car_sprite in car.sprites():
+            # Check if car is near the entrance
+            distance_to_entrance = ((car_sprite.rect.centerx - 100)**2 + 
+                                  (car_sprite.rect.centery - 200)**2)**0.5
+            if distance_to_entrance < 150:
+                # Move the car away from entrance to help unblock
+                car_sprite.rect.x = randint(300, 800)
+                car_sprite.rect.y = randint(200, 500)
+                return True
+        
+        return False
 
     # Game loop
     while True:
@@ -687,6 +1003,181 @@ def main():
                 # Get current state
                 current_state_vector = rl_agent.get_state(player_sprite, car.sprites(), None, spot_rectangles)
                 
+                # Debug information
+                if current_state == GameState.RL_TRAINING:
+                    # Show debugging text in training mode
+                    debug_font = pygame.font.SysFont('calibri', 16)
+                    cars_count = len(car.sprites())
+                    debug_text = f"Cars: {cars_count} | Player active: {player_sprite.active} | Car selected: {Car_select}"
+                    debug_surface = debug_font.render(debug_text, True, (255, 255, 255))
+                    screen.blit(debug_surface, (50, 200))
+                
+                # Make sure cars are visible during training
+                for car_sprite in car.sprites():
+                    # Update all cars regardless of state during training
+                    car_sprite.update(screen)
+                    if car_sprite.rect.x < -200 or car_sprite.rect.x > 1500:
+                        # Fix any cars that have gone off-screen
+                        car_sprite.rect.x = randint(200, 800)
+                        car_sprite.rect.y = randint(200, 400)
+                        car_sprite.velocity = pygame.math.Vector2(0, 0)
+                        print(f"Fixed car position that was off-screen: {car_sprite.rect.x}, {car_sprite.rect.y}")
+                
+                # Ensure there's always at least one car during training
+                if len(car.sprites()) == 0:
+                    print("No cars found, spawning new car")
+                    if spawn_new_car():
+                        # Allow some time for car to initialize
+                        pygame.time.wait(100)
+                
+                # Limit cars in early episodes to improve learning
+                max_cars_allowed = min(3, 1 + rl_current_episode // 100)
+                while len(car.sprites()) > max_cars_allowed:
+                    # Don't remove car if player is in it
+                    cars_to_remove = [c for c in car.sprites() if c != Car_selected]
+                    if cars_to_remove:
+                        cars_to_remove[0].kill()
+                        print("Removed extra car to stay within limit")
+                    else:
+                        # If player is in the car we need to remove, force exit first
+                        if Car_select and Car_selected:
+                            player_sprite.active = True
+                            Car_selected.set_active(False)
+                            player_sprite.rect.x = Car_selected.rect.x + 30
+                            player_sprite.rect.y = Car_selected.rect.y + 70
+                            Car_select = False
+                            space_pressed = 0
+                            Car_selected = None
+                            if len(car.sprites()) > 0:
+                                car.sprites()[0].kill()
+                        break
+                
+                # Add guidance for agent to find car if not already in one
+                if not Car_select and len(car.sprites()) > 0 and player_sprite.active:
+                    # Find closest car that's ready to be driven
+                    nearest_car = None
+                    min_distance = float('inf')
+                    
+                    for car_sprite in car.sprites():
+                        if car_sprite.ClientEntered:  # Only target cars that are ready to be driven
+                            distance = ((player_sprite.rect.centerx - car_sprite.rect.centerx)**2 + 
+                                      (player_sprite.rect.centery - car_sprite.rect.centery)**2)**0.5
+                            if distance < min_distance:
+                                nearest_car = car_sprite
+                                min_distance = distance
+                    
+                    if nearest_car:
+                        # Draw guidance line to help agent find car
+                        pygame.draw.line(screen, (0, 200, 0), 
+                                      (player_sprite.rect.centerx, player_sprite.rect.centery),
+                                      (nearest_car.rect.centerx, nearest_car.rect.centery), 2)
+                        
+                        # Add text guide
+                        if min_distance < 100:
+                            guide_text = "PRESS SPACE"
+                            guide_font = pygame.font.SysFont('calibri', 16)
+                            guide_surface = guide_font.render(guide_text, True, (0, 255, 0))
+                            screen.blit(guide_surface, (nearest_car.rect.centerx - 40, nearest_car.rect.centery - 50))
+                
+                # Guide agent toward parking spot if in car
+                if Car_select and Car_selected and Car_selected.active:
+                    # Find target parking spot
+                    target_spot = None
+                    for spot in spot_rectangles:
+                        if spot["number"] == Car_selected.assigned_spot:
+                            target_spot = spot["rect"]
+                            break
+                    
+                    if target_spot:
+                        # Draw guidance line to target spot
+                        pygame.draw.line(screen, (0, 100, 255), 
+                                     (Car_selected.rect.centerx, Car_selected.rect.centery),
+                                     (target_spot.centerx, target_spot.centery), 2)
+                        
+                        # Add directional arrow toward parking spot
+                        direction_vector = pygame.math.Vector2(
+                            target_spot.centerx - Car_selected.rect.centerx,
+                            target_spot.centery - Car_selected.rect.centery
+                        )
+                        
+                        if direction_vector.length() > 0:
+                            direction_vector.normalize_ip()
+                            arrow_length = 40
+                            arrow_pos = (
+                                int(Car_selected.rect.centerx + direction_vector.x * arrow_length),
+                                int(Car_selected.rect.centery + direction_vector.y * arrow_length)
+                            )
+                            pygame.draw.line(screen, (0, 200, 255), 
+                                         Car_selected.rect.center, arrow_pos, 3)
+                
+                # Reset episode if agent is clearly stuck
+                if current_state == GameState.RL_TRAINING:
+                    # Track if we're in a bad state (car not moving, player far from car)
+                    bad_state = False
+                    
+                    # If there are cars and player isn't in one, check how long they've been separate
+                    if len(car.sprites()) > 0 and not Car_select:
+                        if not hasattr(player_sprite, 'car_separation_timer'):
+                            player_sprite.car_separation_timer = 0
+                        
+                        # Only increment timer if player isn't moving toward car
+                        nearest_car = None
+                        min_distance = float('inf')
+                        for car_sprite in car.sprites():
+                            if car_sprite.ClientEntered:  # Only target cars that are ready to be driven
+                                distance = ((player_sprite.rect.centerx - car_sprite.rect.centerx)**2 + 
+                                         (player_sprite.rect.centery - car_sprite.rect.centery)**2)**0.5
+                                if distance < min_distance:
+                                    nearest_car = car_sprite
+                                    min_distance = distance
+                        
+                        # If player is moving toward car, reduce timer
+                        if nearest_car and hasattr(player_sprite, 'last_car_distance'):
+                            if min_distance < player_sprite.last_car_distance:
+                                player_sprite.car_separation_timer = max(0, player_sprite.car_separation_timer - 2)
+                            else:
+                                player_sprite.car_separation_timer += 1
+                        else:
+                            player_sprite.car_separation_timer += 1
+                        
+                        # Store current distance for next comparison
+                        player_sprite.last_car_distance = min_distance if nearest_car else float('inf')
+                        
+                        # If timer exceeds threshold, consider it a bad state
+                        if player_sprite.car_separation_timer > 600:  # 10 seconds
+                            bad_state = True
+                            reset_reason = "Player not reaching car"
+                    
+                    # If player is in car, check if it's moving
+                    if Car_select and Car_selected:
+                        if not hasattr(Car_selected, 'movement_timer'):
+                            Car_selected.movement_timer = 0
+                            Car_selected.last_position = pygame.math.Vector2(Car_selected.rect.center)
+                        
+                        # Check if car has moved
+                        current_pos = pygame.math.Vector2(Car_selected.rect.center)
+                        distance_moved = current_pos.distance_to(Car_selected.last_position)
+                        
+                        if distance_moved < 10:  # Not moved significantly
+                            Car_selected.movement_timer += 1
+                            if Car_selected.movement_timer > 600:  # 10 seconds of no movement
+                                bad_state = True
+                                reset_reason = "Car not moving"
+                        else:
+                            Car_selected.movement_timer = max(0, Car_selected.movement_timer - 5)
+                            Car_selected.last_position = current_pos
+                    
+                    # Reset if in a bad state
+                    if bad_state:
+                        print(f"Episode {rl_current_episode} reset due to: {reset_reason}")
+                        rl_agent.total_reward -= 20
+                        rl_agent.end_episode(rl_current_episode, rl_successful_parks, rl_successful_deliveries)
+                        rl_current_episode += 1
+                        reset_game()
+                        rl_previous_state = None
+                        pygame.time.wait(100)  # Brief pause between episodes
+                        continue
+                
                 # Every few frames, choose and execute an action
                 rl_frame_count += 1
                 if rl_frame_count >= rl_frame_skip:
@@ -704,9 +1195,47 @@ def main():
                             rl_collision_occurred
                         )
                         
+                        # Check for entrance blocked and give additional penalty
+                        if Entrance_blocked:
+                            # Strong penalty for blocking entrance
+                            reward -= 5.0
+                            
+                            # Display warning on screen
+                            blocked_text = GameTimeFont.render("Entrance Blocked", True, (255, 50, 50))
+                            screen.blit(blocked_text, (550, 20))
+                            
+                            # Sometimes help the agent by clearing the entrance
+                            if current_state == GameState.RL_TRAINING and randint(0, 100) < 10:  # 10% chance
+                                clear_entrance_for_agent()
+                        
                         # Process step in RL agent
                         done = GameOver or current_state == GameState.WIN
                         rl_agent.step(rl_previous_state, rl_current_action, reward, current_state_vector, done)
+                    
+                    # Check if agent is stuck in a bad state
+                    if current_state == GameState.RL_TRAINING and player_sprite.active:
+                        is_stuck = check_if_agent_stuck(
+                            (player_sprite.rect.centerx, player_sprite.rect.centery),
+                            rl_agent.total_reward
+                        )
+                        
+                        # If stuck, force episode reset with penalty
+                        if is_stuck:
+                            print(f"Agent stuck in episode {rl_current_episode}. Resetting...")
+                            # Apply a penalty for getting stuck
+                            rl_agent.total_reward -= 50
+                            # End the episode
+                            rl_agent.end_episode(rl_current_episode, rl_successful_parks, rl_successful_deliveries)
+                            rl_current_episode += 1
+                            rl_successful_parks = 0
+                            rl_successful_deliveries = 0
+                            
+                            # Reset for next episode
+                            reset_game()
+                            rl_previous_state = None
+                            rl_stuck_counter = 0
+                            rl_last_position = None
+                            continue  # Skip the rest of this iteration
                     
                     # Choose next action
                     rl_current_action = rl_agent.act(current_state_vector, training=(current_state == GameState.RL_TRAINING))

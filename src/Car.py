@@ -2,10 +2,33 @@ from typing import KeysView
 import pygame
 from .utils import import_folder
 import os
+import math  # Add missing math import
 from random import randint
 from math import sin, radians, degrees, copysign
 from pygame.math import Vector2
 from .config import *  # Import sound and other settings
+
+# Define missing physics constants that might not be in config.py
+if not 'FRICTION' in globals():
+    FRICTION = 0.02
+if not 'COLLISION_BOUNCE' in globals():
+    COLLISION_BOUNCE = 0.3
+if not 'REVERSE_MULTIPLIER' in globals():
+    REVERSE_MULTIPLIER = 0.6
+if not 'ACCELERATION_CURVE' in globals():
+    ACCELERATION_CURVE = 0.8
+if not 'MIN_SPEED_TO_TURN' in globals():
+    MIN_SPEED_TO_TURN = 0.5
+if not 'STEERING_LIMIT' in globals():
+    STEERING_LIMIT = 1.0
+if not 'DRIFT_THRESHOLD' in globals():
+    DRIFT_THRESHOLD = 4.0
+if not 'COLLISION_SOUND_VOLUME' in globals():
+    COLLISION_SOUND_VOLUME = 0.5
+if not 'PARK_SOUND_VOLUME' in globals():
+    PARK_SOUND_VOLUME = 0.7
+if not 'ENABLE_SOUND' in globals():
+    ENABLE_SOUND = True
 
 
 
@@ -63,16 +86,12 @@ class Client(pygame.sprite.Sprite):
     def update_animation(self, current_time):
         # Add safety check to prevent ZeroDivisionError
         if not self.ClientImg or len(self.ClientImg) == 0:
-            # Re-try loading images or create a fallback image
-            fallback_image = pygame.Surface((38, 72))
-            fallback_image.fill((200, 100, 100))  # Red color for visibility
-            self.ClientImg = [fallback_image]
-            print(f"Warning: ClientImg is empty for client {self.clientnumber_string}. Using fallback image.")
             return
-        
+            
+        # Check if it's time to update the animation
         if current_time - self.last_update > self.animation_speed:
-            self.frame = (self.frame + 1) % len(self.ClientImg)
             self.last_update = current_time
+            self.frame = (self.frame + 1) % len(self.ClientImg)
 
     def ClientExit(self):
         if not self.ClientExited:
@@ -101,6 +120,23 @@ class Client(pygame.sprite.Sprite):
             self.ClientX += self.ClientX_change
         self.ClientWalkAnimation(screen)
 
+    def update(self):
+        # Only move the client if it hasn't exited
+        if not self.ClientExited:
+            self.ClientX += self.ClientX_change
+            
+        # Use a safety check before accessing ClientImg
+        if self.ClientImg and self.frame < len(self.ClientImg):
+            self.image = self.ClientImg[self.frame]
+        
+        # Check if client has exited (moved past exit threshold)
+        if self.ClientX >= 1400:
+            self.ClientExited = True
+            
+            # Add safe deletion marker when client completely exits
+            if hasattr(self, 'car') and self.car:
+                self.car.safe_to_remove = True
+
 
 class Car(pygame.sprite.Sprite):
     def __init__(self, ParkingSpot, CarImgIndex, Clientnumberstr, car_group=None):
@@ -108,31 +144,49 @@ class Car(pygame.sprite.Sprite):
         self.car_group = car_group
         self._rotated_images = {}
         self._rotated_masks = {}  # Cache for rotated collision masks
-        CarImgCyellow = pygame.image.load('Resources/Cars/lr_classic_yellow.png').convert_alpha()
-        CarImgCcyan = pygame.image.load('Resources/Cars/lr_classic_cyan.png').convert_alpha()
-        CarImgCred = pygame.image.load('Resources/Cars/lr_classic_red.png').convert_alpha()
-        CarImgCblue = pygame.image.load('Resources/Cars/lr_classic_blue.png').convert_alpha()
-        CarImgCpink = pygame.image.load('Resources/Cars/lr_classic_pink.png').convert_alpha()        
-        CarImgCghost = pygame.image.load('Resources/Cars/lr_classic_ghost.png').convert_alpha()
-        CarImgMred = pygame.image.load('./Resources/Cars/lr_modern_red.png').convert_alpha()
-        CarImgMblue = pygame.image.load('Resources/Cars/lr_modern_blue.png').convert_alpha()
-        CarImgMpink = pygame.image.load('Resources/Cars/lr_modern_pink.png').convert_alpha()        
-        CarImgMghost = pygame.image.load('Resources/Cars/lr_modern_ghost.png').convert_alpha()
-        CarImgSyellow = pygame.image.load('Resources/Cars/lr_super_yellow.png').convert_alpha()
-        CarImgSpink = pygame.image.load('Resources/Cars/lr_super_pink.png').convert_alpha()        
-        CarImgSghost = pygame.image.load('Resources/Cars/lr_super_ghost.png').convert_alpha()
-        self.CarImg = [CarImgCyellow,CarImgCcyan,CarImgCred,CarImgCghost,CarImgCblue,CarImgCpink,CarImgMred,CarImgMghost,CarImgMblue,CarImgMpink,CarImgSyellow,CarImgSghost,CarImgSpink]
+        self.marked_for_deletion = False  # Flag to track if car should be removed
+        self.safe_to_remove = False  # Flag that indicates car can be safely removed
+        self.delete_cooldown = 0  # Cooldown timer before actual deletion
+        self.deletion_timeout = 180  # Frames to wait before deletion (3 seconds at 60fps)
+        self.exiting_game = False  # New flag to track if car is exiting the game
+        self.position_history = []  # Track recent positions for better stuck detection
         
-        # Safety check to ensure CarImgIndex is valid
+        # Initialize vectors properly
+        self.forward = pygame.math.Vector2(1, 0)  # Default forward vector
+        self.right = pygame.math.Vector2(0, 1)    # Default right vector (perpendicular to forward)
+        
+        # Physics constants for car movement
+        self.acceleration_rate = 0.2
+        self.max_speed = 7.0
+        self.friction = 0.05
+        self.steering_rate = 3.0
+        
+        # Load car images only once - using direct list of images
+        self.CarImg = [
+            pygame.image.load('Resources/Cars/lr_classic_yellow.png').convert_alpha(),
+            pygame.image.load('Resources/Cars/lr_classic_cyan.png').convert_alpha(),
+            pygame.image.load('Resources/Cars/lr_classic_red.png').convert_alpha(),
+            pygame.image.load('Resources/Cars/lr_classic_ghost.png').convert_alpha(),
+            pygame.image.load('Resources/Cars/lr_classic_blue.png').convert_alpha(),
+            pygame.image.load('Resources/Cars/lr_classic_pink.png').convert_alpha(),
+            pygame.image.load('Resources/Cars/lr_modern_red.png').convert_alpha(),
+            pygame.image.load('Resources/Cars/lr_modern_blue.png').convert_alpha(),
+            pygame.image.load('Resources/Cars/lr_modern_pink.png').convert_alpha(),
+            pygame.image.load('Resources/Cars/lr_modern_ghost.png').convert_alpha(),
+            pygame.image.load('Resources/Cars/lr_super_yellow.png').convert_alpha(),
+            pygame.image.load('Resources/Cars/lr_super_pink.png').convert_alpha(),
+            pygame.image.load('Resources/Cars/lr_super_ghost.png').convert_alpha(),
+        ]
+        
+        # Ensure CarImgIndex is a valid integer between 0 and len(self.CarImg)-1
         try:
-            self.CarImgIndex = int(CarImgIndex)
-            if self.CarImgIndex < 0 or self.CarImgIndex >= len(self.CarImg):
-                print(f"Warning: CarImgIndex {self.CarImgIndex} out of range. Using default index 0.")
-                self.CarImgIndex = 0
+            self.CarImgIndex = int(CarImgIndex) % len(self.CarImg)
         except (ValueError, TypeError):
-            print(f"Warning: Invalid CarImgIndex {CarImgIndex}. Using default index 0.")
-            self.CarImgIndex = 0
+            print(f"Warning: Invalid CarImgIndex '{CarImgIndex}'. Using random color instead.")
+            self.CarImgIndex = randint(0, len(self.CarImg)-1)
             
+        print(f"Creating car with color index: {self.CarImgIndex}")
+        
         self.original_image = pygame.transform.rotate(pygame.transform.scale(self.CarImg[self.CarImgIndex], (70, 150)),-90)
         self.image = self.original_image
         self.mask = pygame.mask.from_surface(self.image)  # Create initial mask
@@ -149,7 +203,7 @@ class Car(pygame.sprite.Sprite):
         self.angle = 0
         self.steering_angle = 0
         self.direction = 0
-        self.last_position = pygame.math.Vector2(0, 0)
+        self.last_position = pygame.math.Vector2(self.rect.center)
         self.is_drifting = False
         self.active = False
         self.ClientEntered = False
@@ -167,6 +221,13 @@ class Car(pygame.sprite.Sprite):
         self.wrong_spot_time = None  # When did we park in wrong spot
         self.has_collided = False  # Track if this car has been in a collision
         self.delivery_scored = False  # Track if delivery points were given
+        self.stuck_counter = 0  # Counter to track if car is stuck
+        self.last_checked_position = pygame.math.Vector2(self.rect.center)
+        self.last_position_check_time = pygame.time.get_ticks()
+        self.recovery_attempts = 0  # Track how many times we've tried to recover this car
+        self.last_stuck_reset = 0   # Time of last position reset due to being stuck
+        self.last_collision_time = 0  # Track when the last collision occurred
+        self.position_history = []  # Track recent positions for better stuck detection
 
         # Load sound effects
         if ENABLE_SOUND:
@@ -321,22 +382,46 @@ class Car(pygame.sprite.Sprite):
         self.activebackward = False
         self.is_drifting = False
         self.has_collided = False  # Reset collision state
+        self.recovery_attempts = 0  # Reset recovery attempts counter
         
     def set_active(self, active_state):
         """Safely handle activation/deactivation of the car"""
         if self.active != active_state:  # Only reset if state actually changes
             self.active = active_state
-            if not active_state:
+            if active_state:
+                # When activating car, ensure it's in a valid state
+                if self.rect.x < -100 or self.rect.x > 1500:
+                    # Car is off-screen, move it to a valid position
+                    self.rect.center = (randint(300, 700), randint(250, 450))
+                    print(f"Repositioned off-screen car to {self.rect.center}")
+                    
+                # Reset vehicle controls when activating
+                self.velocity = pygame.math.Vector2(0, 0)
+                self.steering_angle = 0
+                self.direction = 0
+                self.activeforward = False
+                self.activebackward = False
+            else:
                 self.reset_controls()
 
     def handle_collision(self, other_car=None):
         """Enhanced collision handling with directional movement restrictions"""
+        current_time = pygame.time.get_ticks()
+        
         if other_car:
+            # Ignore collisions with cars marked for deletion or far off-screen
+            if getattr(other_car, 'safe_to_remove', False) or other_car.rect.x > 2000:
+                return False
+                
+            # Prevent collision handling too frequently (prevents rapid bouncing)
+            if current_time - self.last_collision_time < 100:  # 100ms cooldown
+                return False
+                
             # Calculate offset between the two cars
             offset = (other_car.rect.x - self.rect.x, other_car.rect.y - self.rect.y)
             
             # Check if masks overlap at current offset
-            if self.mask.overlap(other_car.mask, offset):
+            if self.mask and other_car.mask and self.mask.overlap(other_car.mask, offset):
                 # Calculate collision vector (direction from other car to this car)
                 collision_vector = pygame.math.Vector2(
                     self.rect.centerx - other_car.rect.centerx,
@@ -354,28 +439,41 @@ class Car(pygame.sprite.Sprite):
                     # Calculate dot product to determine if moving toward collision
                     movement_dot = movement_dir.dot(collision_vector)
                     
+                    # Calculate impact force based on speed
+                    impact_speed = self.velocity.length()
+                    impact_force = min(15.0, impact_speed * 0.8)  # Cap maximum force
+                    
                     # If moving into the collision, stop and push back
                     if (self.activeforward and movement_dot > 0) or (self.activebackward and movement_dot < 0):
-                        # Zero out velocity
-                        self.velocity = pygame.math.Vector2(0, 0)
+                        # Reduce velocity based on collision angle
+                        self.velocity -= movement_dir * impact_speed * 0.9
+                        
+                        # Add perpendicular component to create more natural bounces
+                        perp_vector = pygame.math.Vector2(-movement_dir.y, movement_dir.x)
+                        self.velocity += perp_vector * impact_speed * 0.3
                         
                         # Store which directions are blocked due to collision
-                        # This will be used in accelerate() to prevent movement in blocked directions
                         self.blocked_directions = {
                             'forward': self.activeforward and movement_dot > 0,
                             'backward': self.activebackward and movement_dot < 0,
                             'collision_vector': collision_vector
                         }
                         
-                        # Push back slightly to prevent getting stuck
-                        push_amount = 5.0
+                        # Push back to prevent getting stuck
+                        push_amount = min(10.0, 5.0 + impact_force * 0.5)
                         self.rect.center = (
                             self.rect.centerx + collision_vector.x * push_amount,
                             self.rect.centery + collision_vector.y * push_amount
                         )
                         
-                        # Play collision sound if enabled
-                        if ENABLE_SOUND and self.collision_sound:
+                        # Update collision time
+                        self.last_collision_time = current_time
+                        self.has_collided = True
+                        
+                        # Play collision sound if enabled with volume based on impact
+                        if ENABLE_SOUND and self.collision_sound and impact_speed > 1.0:
+                            volume = min(1.0, impact_speed / 10.0) * COLLISION_SOUND_VOLUME
+                            self.collision_sound.set_volume(volume)
                             self.collision_sound.play()
                         
                         return True
@@ -409,6 +507,89 @@ class Car(pygame.sprite.Sprite):
             self.parked = False
             self.current_spot = None
             self.wrong_spot_time = None
+
+    def check_and_recover_position(self):
+        """Enhanced position recovery with better stuck detection"""
+        current_time = pygame.time.get_ticks()
+        
+        # Track position history for better stuck detection (keep last 5 positions)
+        if len(self.position_history) >= 10:
+            self.position_history.pop(0)
+        self.position_history.append(pygame.math.Vector2(self.rect.center))
+        
+        # Check for off-screen or invalid positions
+        if (self.rect.centerx < -50 or self.rect.centerx > 1400 or 
+            self.rect.centery < -50 or self.rect.centery > 800):
+            
+            # Only attempt recovery a limited number of times
+            if self.recovery_attempts < 3:
+                # Move car back to a valid position
+                old_pos = self.rect.center
+                self.rect.center = (randint(200, 800), randint(200, 500))
+                self.velocity = pygame.math.Vector2(0, 0)
+                self.reset_controls()
+                self.recovery_attempts += 1
+                print(f"Recovered car from invalid position {old_pos} to {self.rect.center}")
+                return True
+            else:
+                # If we've tried to recover too many times, mark for deletion
+                # but only if this car isn't currently active (being driven)
+                if not self.active:
+                    print(f"Car recovery failed after {self.recovery_attempts} attempts, marking for deletion")
+                    self.marked_for_deletion = True
+                    self.delete_cooldown = self.deletion_timeout  # Start deletion timeout
+                else:
+                    # For active cars, try one more recovery to a safer position
+                    self.rect.center = (500, 400)
+                    self.velocity = pygame.math.Vector2(0, 0)
+                    print("Force-repositioning active car that was off-screen")
+        
+        # Check if car is stuck in the same position for too long
+        if current_time - self.last_position_check_time > 2000:  # Check every 2 seconds
+            current_pos = pygame.math.Vector2(self.rect.center)
+            distance_moved = current_pos.distance_to(self.last_checked_position)
+            
+            # Detect if car is stuck by analyzing position history
+            if self.active and len(self.position_history) >= 10:
+                # Calculate average movement over recent history
+                avg_movement = 0
+                for i in range(1, len(self.position_history)):
+                    avg_movement += self.position_history[i].distance_to(self.position_history[i-1])
+                avg_movement /= (len(self.position_history) - 1)
+                
+                # If active and barely moved, increment stuck counter
+                if avg_movement < 3:
+                    self.stuck_counter += 1
+                    # If stuck for too long (6 checks = ~12 seconds), try to unstick
+                    if self.stuck_counter > 6 and current_time - self.last_stuck_reset > 15000:
+                        print(f"Car stuck at {self.rect.center} - trying to unstuck")
+                        
+                        # Apply a small random impulse to try to free the car
+                        unstick_angle = randint(0, 359)
+                        unstick_vector = pygame.math.Vector2(1, 0).rotate(unstick_angle)
+                        self.velocity = unstick_vector * 2.0
+                        
+                        # If that doesn't work after a few tries, reposition
+                        if self.recovery_attempts >= 2:
+                            old_pos = self.rect.center
+                            # Choose a new safe position away from current
+                            self.rect.center = (randint(300, 700), randint(250, 450))
+                            self.velocity = pygame.math.Vector2(0, 0)
+                            print(f"Repositioned stuck car from {old_pos} to {self.rect.center}")
+                        
+                        self.stuck_counter = 0
+                        self.recovery_attempts += 1
+                        self.last_stuck_reset = current_time
+                        return True
+                else:
+                    # Reset counter if car moved
+                    self.stuck_counter = max(0, self.stuck_counter - 1)
+            
+            # Update position tracking
+            self.last_checked_position = current_pos
+            self.last_position_check_time = current_time
+        
+        return False
 
     def boundaries(self):
         # Enhanced boundary collision with more natural bounce and feedback
@@ -479,18 +660,18 @@ class Car(pygame.sprite.Sprite):
 
             
     def successfulDelivery(self):
-        if self.rect.y == 125 and self.rect.x == 1130:
+        # Modified to mark car for deletion instead of directly killing it
+        if self.rect.y <= 125 and self.rect.x >= 1130:
             if not self.delivery_scored:
                 self.delivery_scored = True
-                self.rect.x = 1600
-                self.Client.sprite.ClientX = 1500
+                self.marked_for_deletion = True  # Mark for controlled deletion
                 self.SuccessDelivery = True
                 return True  # Return True if points should be awarded
         return False
 
     def ClientExit(self):
-            if self.ClientEntered:
-                self.Client.sprite.ClientExit()
+        if self.ClientEntered:
+            self.Client.sprite.ClientExit()
     
 
     def check_parking_alignment(self, spot_rect):
@@ -606,57 +787,233 @@ class Car(pygame.sprite.Sprite):
                 spot_surface = pygame.font.SysFont('calibri', 16).render(spot_text, True, spot_color)
                 screen.blit(spot_surface, (self.rect.centerx - 35, self.rect.bottom + 25))
 
-
-
-    def update(self, screen):
-        """Main update function with improved collision response and driving feel"""
-        if self.ClientEntered != True:
-            self.initial_animation(screen)
+    def update(self, dt, cars=None):
+        """Update car state"""
+        # If car is marked for deletion, handle fade out effect
+        if self.marked_for_deletion:
+            # Gradually fade out the car
+            self.deletion_timer += dt
+            if self.deletion_timer >= self.deletion_cooldown:
+                self.safe_to_remove = True
+                return
             
+            # Apply fade effect
+            alpha = 255 * (1 - (self.deletion_timer / self.deletion_cooldown))
+            self.image.set_alpha(int(alpha))
+            return  # Don't process movement for cars being deleted
+
+        # Store position history for stuck detection
+        current_time = pygame.time.get_ticks()
+        if len(self.position_history) > 20:
+            self.position_history.pop(0)  # Remove oldest position
+        self.position_history.append((pygame.math.Vector2(self.rect.center), current_time))
+        
+        # Check if stuck and try to recover
+        self.handle_stuck_detection()
+        
+        # Apply acceleration/deceleration
+        if self.activeforward:  # Changed from self.accelerating to self.activeforward
+            self.speed += self.acceleration * dt
+        elif self.activebackward:  # Changed from self.braking to self.activebackward
+            self.speed -= self.brake_force * dt
+        else:
+            # Slow down due to friction when neither accelerating nor braking
+            if self.speed > 0:
+                self.speed = max(0, self.speed - self.friction * dt)
+            elif self.speed < 0:
+                self.speed = min(0, self.speed + self.friction * dt)
+        
+        # Limit speed
+        self.speed = max(-self.max_reverse_speed, min(self.speed, self.max_speed))
+        
+        # Calculate drift factor based on speed and steering angle
+        drift_factor = min(1.0, abs(self.speed) / (self.max_speed * 0.5))
+        steering_intensity = abs(self.steering) / self.max_steering
+        
+        # Apply steering (turn car based on steering direction)
+        if abs(self.speed) > 0.1:  # Only turn if moving
+            # At higher speeds, steering has more influence on drift
+            # At lower speeds, car turns more sharply
+            effective_steering = self.steering * (1.0 - (drift_factor * 0.7))
+            turn_amount = effective_steering * (abs(self.speed) / self.max_speed) * dt
+            self.angle += turn_amount
+            self._recalculate_vectors()
+        
+        # Calculate velocity based on current angle and speed
+        self.velocity = self.forward * self.speed
+        
+        # Update position
+        if abs(self.speed) > 0.05:  # Only update position if moving
+            new_pos = pygame.math.Vector2(self.rect.center) + self.velocity * dt
+            self.rect.center = (new_pos.x, new_pos.y)
+        
+        # Check for collisions with other cars if provided
+        if cars:
+            for other_car in cars:
+                if other_car != self and self.rect.colliderect(other_car.rect):
+                    self.handle_collision(other_car)
+                    
+        # Check screen boundaries and bounce if needed
+        screen_width, screen_height = pygame.display.get_surface().get_size()
+        
+        # Left and right boundaries
+        if self.rect.left < 0:
+            self.rect.left = 0
+            self.velocity.x = abs(self.velocity.x) * 0.3  # Bounce with reduced velocity
+            self.speed *= 0.5  # Reduce speed on collision
+        elif self.rect.right > screen_width:
+            self.rect.right = screen_width
+            self.velocity.x = -abs(self.velocity.x) * 0.3  # Bounce with reduced velocity
+            self.speed *= 0.5  # Reduce speed on collision
+            
+        # Top and bottom boundaries
+        if self.rect.top < 0:
+            self.rect.top = 0
+            self.velocity.y = abs(self.velocity.y) * 0.3  # Bounce with reduced velocity
+            self.speed *= 0.5  # Reduce speed on collision
+        elif self.rect.bottom > screen_height:
+            self.rect.bottom = screen_height
+            self.velocity.y = -abs(self.velocity.y) * 0.3  # Bounce with reduced velocity
+            self.speed *= 0.5  # Reduce speed on collision
+
+    def draw_fade_effect(self, screen):
+        """Draw fade effect for cars being removed"""
+        if self.marked_for_deletion and not self.safe_to_remove:
+            # Calculate fade based on deletion countdown
+            fade_ratio = self.delete_cooldown / self.deletion_timeout
+            
+            # Draw expanding circle effect
+            radius = int(50 * fade_ratio)
+            alpha = max(0, 255 - int(255 * fade_ratio))
+            
+            # Create a surface for the circle with alpha
+            circle_surface = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
+            pygame.draw.circle(circle_surface, (255, 255, 255, alpha), (radius, radius), radius)
+            
+            # Draw circle centered on car
+            screen.blit(circle_surface, (self.rect.centerx - radius, self.rect.centery - radius))
+            
+            # Add fadeout effect to car sprite
+            if fade_ratio > 0.5:  # Start fadeout halfway through deletion countdown
+                self.image.set_alpha(int(255 * (1 - (fade_ratio - 0.5) * 2)))
+    
+    def on_key_down(self, key):
+        """Process key down events for car control"""
         if self.active:
-            # Store previous position for collision detection and recovery
-            prev_pos = pygame.math.Vector2(self.rect.center)
+            if key == pygame.K_UP:
+                self.activeforward = True
+            elif key == pygame.K_DOWN:
+                self.activebackward = True
+            elif key == pygame.K_LEFT:
+                self.direction = 1
+            elif key == pygame.K_RIGHT:
+                self.direction = -1
+    
+    def on_key_up(self, key):
+        """Process key up events for car control"""
+        if self.active:
+            if key == pygame.K_UP:
+                self.activeforward = False
+            elif key == pygame.K_DOWN:
+                self.activebackward = False
+            elif key == pygame.K_LEFT and self.direction == 1:
+                self.direction = 0
+            elif key == pygame.K_RIGHT and self.direction == -1:
+                self.direction = 0
+
+    def handle_stuck_detection(self):
+        """Detect if car is stuck and attempt recovery if needed"""
+        # Ensure we have enough position history
+        if len(self.position_history) < 5:
+            return False
             
-            # Update vehicle steering and rotation
-            self.set_rotation()
+        # Check if position hasn't changed significantly in the last few updates
+        stuck_threshold = 5  # pixels
+        time_threshold = 2000  # 2 seconds
+        
+        # Get current position and time
+        current_pos, current_time = self.position_history[-1]
+        oldest_pos, oldest_time = self.position_history[0]
+        
+        # Calculate distance moved
+        distance = pygame.math.Vector2(current_pos).distance_to(oldest_pos)
+        time_elapsed = current_time - oldest_time
+        
+        # If car hasn't moved much but has been trying to (non-zero speed)
+        is_stuck = distance < stuck_threshold and time_elapsed > time_threshold and abs(self.speed) > 0.5
+        
+        if is_stuck:
+            # Initialize recovery attempts counter if needed
+            if not hasattr(self, 'recovery_attempts'):
+                self.recovery_attempts = 0
+                self.last_recovery_time = 0
             
-            # Apply acceleration and velocity updates
-            self.accelerate()
-            
-            # Check if new position would cause collision using the stored car group
-            if self.car_group:
-                collided = pygame.sprite.spritecollide(self, self.car_group, False, 
-                                                      collided=pygame.sprite.collide_mask)
-                if collided:
-                    for other in collided:
-                        if other != self:
-                            # If collision detected, handle the collision properly
-                            if self.handle_collision(other):
-                                # Show small bounce effect on significant collisions
-                                if self.velocity.length() > 0.5:
-                                    # Calculate bounce direction
-                                    bounce_vector = pygame.math.Vector2(
-                                        self.rect.centerx - other.rect.centerx,
-                                        self.rect.centery - other.rect.centery
-                                    )
-                                    if bounce_vector.length() > 0:
-                                        bounce_vector.normalize_ip()
-                                        # Apply small bounce effect
-                                        self.velocity += bounce_vector * COLLISION_BOUNCE
-                            break
-            
-            # Apply boundary constraints
-            self.boundaries()
-            
-            # Draw feedback and visual indicators
-            self.draw_parking_feedback(screen)
-            
-        # Handle client animation and car delivery
-        if self.Client.sprite.ClientExited:
-            self.Client.sprite.ClientShopExit(screen)
-            if not self.active:
-                self.successfulDelivery()
+            # Limit recovery frequency and attempts
+            if (current_time - self.last_recovery_time > 3000 and 
+                self.recovery_attempts < 5):
+                self.last_recovery_time = current_time
+                self.recovery_attempts += 1
+                self._attempt_recovery()
+                return True
                 
-        # Remove car if delivery successful
-        if self.SuccessDelivery == True:
-            self.kill()
+        return False
+        
+    def _attempt_recovery(self):
+        """Try to recover from stuck position"""
+        # First, try reversing direction
+        self.speed = -self.speed * 1.2
+        
+        # Add a small random angle change to escape
+        import random
+        angle_change = random.uniform(-30, 30)
+        self.angle += angle_change
+        self._recalculate_vectors()
+        
+        print(f"Car {self.ParkingSpot} attempted recovery from stuck position.")
+        
+    def _recalculate_vectors(self):
+        """Update forward and right vectors based on current angle"""
+        # Convert angle to radians (pygame uses degrees)
+        angle_rad = math.radians(self.angle)
+        
+        # Calculate forward vector (unit vector in direction of car's heading)
+        self.forward = pygame.math.Vector2(math.cos(angle_rad), math.sin(angle_rad))
+        
+        # Calculate right vector (perpendicular to forward)
+        self.right = pygame.math.Vector2(-self.forward.y, self.forward.x)
+        
+    def draw(self, screen):
+        """Draw the car with opacity based on deletion state"""
+        if not self.safe_to_remove:
+            # Create a copy of the original image for rotation and alpha
+            rotated = pygame.transform.rotate(self.image, -self.angle)
+            
+            # Apply fade effect if marked for deletion
+            if self.marked_for_deletion and hasattr(self, 'delete_cooldown'):
+                # Calculate alpha based on remaining cooldown
+                alpha_factor = max(0, min(255, int(255 * self.delete_cooldown / self.deletion_timeout)))
+                
+                # Create a copy with alpha
+                temp = rotated.copy()
+                temp.set_alpha(alpha_factor)
+                rotated = temp
+            
+            # Calculate position for rotated image
+            new_rect = rotated.get_rect(center=self.rect.center)
+            screen.blit(rotated, new_rect.topleft)
+            
+            # Draw additional indicators for debugging (optional)
+            if self.active and self.show_debug_info:
+                # Draw velocity vector
+                if self.velocity.length() > 0:
+                    end_pos = (
+                        int(self.rect.centerx + self.velocity.normalize() * 30).x,
+                        int(self.rect.centery + self.velocity.normalize() * 30).y
+                    )
+                    pygame.draw.line(screen, (0, 255, 0), self.rect.center, end_pos, 2)
+                
+                # Draw parking indicator if applicable
+                if self.is_parked:
+                    pygame.draw.circle(screen, (0, 255, 0), self.rect.center, 10, 2)
+                elif self.ParkingSpot is not None:
+                    pygame.draw.circle(screen, (255, 255, 0), self.rect.center, 10, 2)
