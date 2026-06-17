@@ -1,3 +1,8 @@
 
 *.pyc
+__pycache__/
 .DS_Store
+
+# Training output (models, checkpoints, tensorboard logs)
+rl/runs/
+rl/runs_*/

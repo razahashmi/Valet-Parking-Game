@@ -11,3 +11,19 @@ The second part of the paper will focus on edge cases such as all parking spots 
 In the above list reduced game time is especially of importance because when a human player plays the game and notices game time is pretty low or they are being penalized.  <br />
 They start memorizing the customer avatar and their car model and ditch the parking lot numbers. We want to see whether the RL agent mimics behaviour similar to this or adopts some other strategy (such as parking near exit). Moreover, a counter to memorization is increased probability of customers’ having the same car model.<br />
 After successfully passing a stage, the next stage introduces different environment with added obstacles and changed parking spots orientation. This gamified version of valet parking can help us unfold interesting behaviour of the RL agent when challenged with human centeric tasks.
+
+## Getting started
+
+```bash
+pip install -r requirements.txt
+python ValetParkGame.py        # play it yourself (arrow keys + space bar)
+python -m rl.random_agent      # run the RL environment smoke test
+```
+
+## RL environment
+
+The game is wrapped as a [Gymnasium](https://gymnasium.farama.org/) environment in
+[`rl/`](rl/) so an agent can drive instead of the keyboard. It reuses the game's own
+sprite classes and runs a deterministic, step-based simulation (headless or rendered).
+See [rl/README.md](rl/README.md) for the action/observation/reward design and a
+Stable-Baselines3 training snippet.
