@@ -6,23 +6,22 @@ from os import walk
 ParkingSpot = [1001,1002,1003,1004,1005,1006,1007,1008,1009,1010,1011,1012,1013,1014,1015,1016,1017,1018]
 
 
-def GameTimer(seconds,GameTime,GameTimeFont,screen,entrance_blocked):
+def GameTimer(remaining, blocked, GameTimeFont, screen):
+    # Renders the countdown clock and the "Entrance Blocked!" banner.
+    # `remaining` is the seconds left (penalty already subtracted by the caller);
+    # `blocked` is whether the entrance is currently obstructed.
+    # Returns True when time has run out.
     ParkingBlockedFont = pygame.font.SysFont('calibri', 15)
-    if entrance_blocked != 0:
-        Gameseconds = GameTime - round(seconds)
-        GameTimeRender = GameTimeFont.render(str(Gameseconds), True, (0, 0, 0))
-        pygame.draw.rect(screen, (255,255,255), (1085, 5,80, 35))
-        screen.blit(GameTimeRender,(1100, 10))
-    if entrance_blocked:
-        Gameseconds = GameTime - int((1.2*(round(seconds))))
-        GameTimeRender = GameTimeFont.render(str(Gameseconds), True, (136, 8, 8))
-        pygame.draw.rect(screen, (255,255,255), (1085, 5,80, 35))
-        screen.blit(GameTimeRender,(1100, 10))
+    remaining = max(0, int(remaining))
+    colour = (136, 8, 8) if blocked else (0, 0, 0)
+    GameTimeRender = GameTimeFont.render(str(remaining), True, colour)
+    pygame.draw.rect(screen, (255, 255, 255), (1085, 5, 80, 35))
+    screen.blit(GameTimeRender, (1100, 10))
+    if blocked:
         ParkingBlockedRender = ParkingBlockedFont.render("Entrance Blocked!", True, (136, 8, 8))
-        pygame.draw.rect(screen, (255,255,255), (180, 5,125, 25))
-        screen.blit(ParkingBlockedRender,(190, 10))
-        
-    return Gameseconds <= 0
+        pygame.draw.rect(screen, (255, 255, 255), (180, 5, 125, 25))
+        screen.blit(ParkingBlockedRender, (190, 10))
+    return remaining <= 0
 
 def import_folder(path):
     surface_list = []

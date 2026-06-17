@@ -1,0 +1,10 @@
+# Game
+pygame>=2.6
+
+# RL environment
+gymnasium>=1.0
+numpy>=1.24
+
+# Training (PPO). stable-baselines3 pulls in torch.
+stable-baselines3>=2.3
+tensorboard>=2.14
