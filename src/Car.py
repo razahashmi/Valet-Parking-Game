@@ -74,6 +74,7 @@ class Car(pygame.sprite.Sprite):
         self.original_image =  pygame.transform.rotate(pygame.transform.scale(self.CarImg[int(self.CarImgIndex)], (70, 150)),-90)
         self.image = self.original_image
         self.rect =  self.image.get_rect(center = (-100,160))
+        self.prev_center = self.rect.center  # last position, used to undo a move on collision
         self.ParkingSpotfont = pygame.font.SysFont('Comic Sans MS', 20)
         self.ParkingSpot = ParkingSpot
         self.angle = 0
@@ -108,6 +109,7 @@ class Car(pygame.sprite.Sprite):
             self.forward.rotate_ip(-self.rotation_speed)
 
     def accelerate(self):
+        self.prev_center = self.rect.center  # remember where we were before moving
         if self.activeforward:
             self.rect.center += self.forward * 3
         if self.activebackward:
@@ -147,7 +149,9 @@ class Car(pygame.sprite.Sprite):
   
             
     def successfulDelivery(self):
-        if self.rect.y == 125 and self.rect.x == 1130:
+        # Delivered once the car is parked in the top-right exit corner. Uses a small
+        # tolerance zone instead of an exact pixel match so it reliably triggers.
+        if self.rect.x >= 1120 and self.rect.y <= 135:
             print("Exit spot reached")
             self.rect.x = 1600
             self.Client.sprite.ClientX = 1500
