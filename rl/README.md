@@ -59,12 +59,15 @@ a one-off `+1` for first entering each car, and `-0.02`/tick per waiting client.
 
 `ValetParkEnv(render_mode=None, game_time=300, fps=60, arrival_interval_s=10,
 exit_interval_s=20, num_clients=10, num_car_models=12, reward_shaping=True,
-frame_skip=1, max_cars=None)`
+frame_skip=1, max_cars=None, arrival_prob=0.5, exit_prob=0.5)`
 
 - `frame_skip` — hold each action for N ticks (shortens the horizon; training uses 4).
 - `num_clients` — clients per episode; lower it for a curriculum.
 - `max_cars` — observation capacity (defaults to `num_clients`); keep it fixed across a
   curriculum so one policy keeps working as `num_clients` grows.
+- `arrival_prob` / `exit_prob` — chance a scheduled arrival / pickup fires. At the default
+  `0.5`, an episode can be unwinnable by luck (the client never requests pickup in time);
+  set both to `1.0` for deterministic timing so a competent policy can approach 100%.
 
 Lower `game_time` / `arrival_interval_s` for faster iteration; set `reward_shaping=False`
 to train against the raw sparse reward.
@@ -87,8 +90,8 @@ from the repo root:
 ```bash
 python -m rl.train                                    # 1M steps, 4 envs, frame_skip=4
 python -m rl.train --timesteps 5_000_000 --n-envs 8   # longer run
-# curriculum: learn with 1 client, then resume with more (obs size stays fixed)
-python -m rl.train --num-clients 1 --timesteps 1_000_000 --logdir rl/runs/s1
+# curriculum: learn 1 client with deterministic timing + LR decay, then resume with more
+python -m rl.train --num-clients 1 --arrival-prob 1 --exit-prob 1 --lr-schedule --logdir rl/runs/s1
 python -m rl.train --num-clients 3 --load rl/runs/s1/valet_ppo_final --logdir rl/runs/s3
 tensorboard --logdir rl/runs                          # watch curves
 ```

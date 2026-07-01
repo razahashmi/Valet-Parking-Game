@@ -51,6 +51,10 @@ def parse_args():
                    help="clients per episode; start low (e.g. 1) for a curriculum")
     p.add_argument("--max-cars", type=int, default=10,
                    help="observation capacity; keep fixed across curriculum stages")
+    p.add_argument("--arrival-prob", type=float, default=0.5,
+                   help="chance a scheduled arrival fires; 1.0 = deterministic timing")
+    p.add_argument("--exit-prob", type=float, default=0.5,
+                   help="chance a scheduled pickup fires; 1.0 = deterministic timing")
     p.add_argument("--subproc", action="store_true",
                    help="use SubprocVecEnv (one process per env) instead of DummyVecEnv")
     p.add_argument("--logdir", default="rl/runs")
@@ -60,10 +64,17 @@ def parse_args():
     p.add_argument("--n-steps", type=int, default=2048)
     p.add_argument("--batch-size", type=int, default=256)
     p.add_argument("--lr", type=float, default=3e-4)
+    p.add_argument("--lr-schedule", action="store_true",
+                   help="linearly decay the learning rate to 0 (stabilizes late training)")
     p.add_argument("--gamma", type=float, default=0.999, help="high: episodes are long")
     p.add_argument("--ent-coef", type=float, default=0.01, help="exploration bonus")
     p.add_argument("--progress", action="store_true", help="show a tqdm progress bar")
     return p.parse_args()
+
+
+def linear_schedule(initial):
+    """SB3 schedule: lr goes from `initial` at start to 0 at the end of training."""
+    return lambda progress_remaining: progress_remaining * initial
 
 
 def main():
@@ -71,7 +82,8 @@ def main():
     os.makedirs(args.logdir, exist_ok=True)
     env_kwargs = dict(render_mode=None, game_time=args.game_time,
                       frame_skip=args.frame_skip, num_clients=args.num_clients,
-                      max_cars=args.max_cars)
+                      max_cars=args.max_cars, arrival_prob=args.arrival_prob,
+                      exit_prob=args.exit_prob)
     vec_cls = SubprocVecEnv if args.subproc else DummyVecEnv
 
     # info_keywords surfaces the true metrics in the episode buffer for RolloutStats.
@@ -98,11 +110,12 @@ def main():
         print(f"resuming from {args.load}")
         model = PPO.load(args.load, env=env, tensorboard_log=args.logdir)
     else:
+        lr = linear_schedule(args.lr) if args.lr_schedule else args.lr
         model = PPO(
             "MlpPolicy", env, verbose=1, seed=args.seed,
             tensorboard_log=args.logdir,
             n_steps=args.n_steps, batch_size=args.batch_size,
-            learning_rate=args.lr, gamma=args.gamma, gae_lambda=0.95,
+            learning_rate=lr, gamma=args.gamma, gae_lambda=0.95,
             ent_coef=args.ent_coef, n_epochs=10,
             policy_kwargs=dict(net_arch=[256, 256]),
         )

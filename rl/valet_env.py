@@ -88,7 +88,8 @@ class ValetParkEnv(gym.Env):
     def __init__(self, render_mode=None, game_time=GameTime, fps=60,
                  arrival_interval_s=10.0, exit_interval_s=20.0,
                  num_clients=Number_Clients, num_car_models=number_cars_available,
-                 reward_shaping=True, frame_skip=1, max_cars=None):
+                 reward_shaping=True, frame_skip=1, max_cars=None,
+                 arrival_prob=0.5, exit_prob=0.5):
         super().__init__()
         assert render_mode in (None, "human", "rgb_array")
         self.render_mode = render_mode
@@ -96,6 +97,10 @@ class ValetParkEnv(gym.Env):
         self.fps = int(fps)
         self.arrival_ticks = max(1, int(arrival_interval_s * self.fps))
         self.exit_ticks = max(1, int(exit_interval_s * self.fps))
+        # Probability a scheduled arrival/pickup actually fires. 1.0 makes timing
+        # deterministic (useful for curriculum stages / removing the luck ceiling).
+        self.arrival_prob = float(arrival_prob)
+        self.exit_prob = float(exit_prob)
         self.num_clients = int(num_clients)
         self.num_car_models = int(num_car_models)
         # Observation capacity. Keep this fixed across a curriculum so one policy keeps
@@ -237,14 +242,14 @@ class ValetParkEnv(gym.Env):
         # --- scheduled arrivals / departures ---
         if self.tick % self.arrival_ticks == 0:
             if (self.cars_entered + self.pending < self.total_clients
-                    and int(self.np_random.integers(0, 2)) == 1):
+                    and self.np_random.random() < self.arrival_prob):
                 if entrance_blocked:
                     self.pending += 1
                 else:
                     self._spawn_next()
         if self.tick % self.exit_ticks == 0:
             cars_here = self.car.sprites()
-            if cars_here and int(self.np_random.integers(0, 2)) == 1:
+            if cars_here and self.np_random.random() < self.exit_prob:
                 cars_here[int(self.np_random.integers(0, len(cars_here)))].ClientExit()
 
         # --- static visual layers ---
