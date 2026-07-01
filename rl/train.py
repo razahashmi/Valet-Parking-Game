@@ -13,9 +13,31 @@ import os
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
-from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
+from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback, EvalCallback
+from stable_baselines3.common.utils import safe_mean
 
 from rl.valet_env import ValetParkEnv
+
+
+class RolloutStats(BaseCallback):
+    """Log the true task metrics (deliveries, win rate) to TensorBoard each rollout.
+
+    Raw reward is inflated by shaping, so judge progress by these instead.
+    """
+
+    def _on_step(self):
+        return True
+
+    def _on_rollout_end(self):
+        buf = self.model.ep_info_buffer
+        if not buf:
+            return
+        delivered = [e["delivered_total"] for e in buf if "delivered_total" in e]
+        won = [float(e["won"]) for e in buf if "won" in e]
+        if delivered:
+            self.logger.record("rollout/delivered_mean", safe_mean(delivered))
+        if won:
+            self.logger.record("rollout/win_rate", safe_mean(won))
 
 
 def parse_args():
@@ -24,6 +46,11 @@ def parse_args():
     p.add_argument("--timesteps", type=int, default=1_000_000)
     p.add_argument("--n-envs", type=int, default=4)
     p.add_argument("--game-time", type=int, default=60, help="seconds per episode")
+    p.add_argument("--frame-skip", type=int, default=4, help="action-repeat ticks per step")
+    p.add_argument("--num-clients", type=int, default=10,
+                   help="clients per episode; start low (e.g. 1) for a curriculum")
+    p.add_argument("--max-cars", type=int, default=10,
+                   help="observation capacity; keep fixed across curriculum stages")
     p.add_argument("--subproc", action="store_true",
                    help="use SubprocVecEnv (one process per env) instead of DummyVecEnv")
     p.add_argument("--logdir", default="rl/runs")
@@ -42,15 +69,21 @@ def parse_args():
 def main():
     args = parse_args()
     os.makedirs(args.logdir, exist_ok=True)
-    env_kwargs = dict(render_mode=None, game_time=args.game_time)
+    env_kwargs = dict(render_mode=None, game_time=args.game_time,
+                      frame_skip=args.frame_skip, num_clients=args.num_clients,
+                      max_cars=args.max_cars)
     vec_cls = SubprocVecEnv if args.subproc else DummyVecEnv
 
+    # info_keywords surfaces the true metrics in the episode buffer for RolloutStats.
+    monitor_kwargs = dict(info_keywords=("delivered_total", "won"))
     env = make_vec_env(ValetParkEnv, n_envs=args.n_envs, seed=args.seed,
-                       env_kwargs=env_kwargs, vec_env_cls=vec_cls)
+                       env_kwargs=env_kwargs, vec_env_cls=vec_cls,
+                       monitor_kwargs=monitor_kwargs)
     eval_env = make_vec_env(ValetParkEnv, n_envs=1, seed=args.seed + 1000,
                             env_kwargs=env_kwargs, vec_env_cls=DummyVecEnv)
 
     callbacks = [
+        RolloutStats(),
         CheckpointCallback(save_freq=max(100_000 // args.n_envs, 1),
                            save_path=os.path.join(args.logdir, "checkpoints"),
                            name_prefix="valet_ppo"),

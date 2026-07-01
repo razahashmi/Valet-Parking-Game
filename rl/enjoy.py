@@ -19,6 +19,9 @@ def parse_args():
     p.add_argument("model", help="path to a saved PPO .zip")
     p.add_argument("--episodes", type=int, default=3)
     p.add_argument("--game-time", type=int, default=60)
+    p.add_argument("--frame-skip", type=int, default=4, help="must match training")
+    p.add_argument("--num-clients", type=int, default=10)
+    p.add_argument("--max-cars", type=int, default=10, help="must match training (obs size)")
     p.add_argument("--render", choices=["human", "none"], default="human")
     p.add_argument("--stochastic", action="store_true",
                    help="sample actions instead of taking the greedy one")
@@ -28,7 +31,9 @@ def parse_args():
 def main():
     args = parse_args()
     render_mode = None if args.render == "none" else "human"
-    env = ValetParkEnv(render_mode=render_mode, game_time=args.game_time)
+    env = ValetParkEnv(render_mode=render_mode, game_time=args.game_time,
+                       frame_skip=args.frame_skip, num_clients=args.num_clients,
+                       max_cars=args.max_cars)
     model = PPO.load(args.model)
     print(f"loaded {args.model}")
 
