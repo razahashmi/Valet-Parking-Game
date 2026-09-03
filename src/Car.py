@@ -1,10 +1,14 @@
 from typing import KeysView
 import pygame
 from .utils import import_folder
+from .ParkingSpots import parking_spot_centers
 import os
 from random import randint
-from math import sin, radians, degrees, copysign
+from math import sin, radians, degrees, copysign, hypot
 from pygame.math import Vector2
+
+_SPOT_CENTERS = parking_spot_centers()
+PARK_TOLERANCE = 60  # px: how close the car centre must get to its spot to count as parked
 
 
 
@@ -77,6 +81,8 @@ class Car(pygame.sprite.Sprite):
         self.prev_center = self.rect.center  # last position, used to undo a move on collision
         self.ParkingSpotfont = pygame.font.SysFont('Comic Sans MS', 20)
         self.ParkingSpot = ParkingSpot
+        self.spot_center = _SPOT_CENTERS.get(ParkingSpot)
+        self.parked = False   # has this car been left at its assigned numbered spot?
         self.angle = 0
         self.rotation_speed = 1.5
         self.direction = 0
@@ -149,9 +155,10 @@ class Car(pygame.sprite.Sprite):
   
             
     def successfulDelivery(self):
-        # Delivered once the car is parked in the top-right exit corner. Uses a small
-        # tolerance zone instead of an exact pixel match so it reliably triggers.
-        if self.rect.x >= 1120 and self.rect.y <= 135:
+        # Delivered only after the car has been parked at its assigned spot AND then
+        # driven to the top-right exit corner. The `parked` gate stops the agent from
+        # "cheating" by shuttling cars straight from the entrance to the exit.
+        if self.parked and self.rect.x >= 1120 and self.rect.y <= 135:
             print("Exit spot reached")
             self.rect.x = 1600
             self.Client.sprite.ClientX = 1500
@@ -170,6 +177,11 @@ class Car(pygame.sprite.Sprite):
             self.get_rotation()
             self.accelerate()
             self.boundaries()
+        # Latch 'parked' once the car is left resting at its assigned numbered spot.
+        if (not self.active and not self.parked and self.spot_center is not None
+                and hypot(self.rect.centerx - self.spot_center[0],
+                          self.rect.centery - self.spot_center[1]) <= PARK_TOLERANCE):
+            self.parked = True
         if self.Client.sprite.ClientExited:
             self.Client.sprite.ClientShopExit(screen)
             if self.active == False:

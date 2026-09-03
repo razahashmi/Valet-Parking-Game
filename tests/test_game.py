@@ -64,19 +64,39 @@ def test_space_without_car_does_not_crash():
 
 
 def test_pickup_reaches_every_client():
-    """Each pickup event calls a not-yet-called client, so all are eventually served."""
+    """Each pickup event calls a not-yet-called (parked) client, so all get served."""
     n, events = 10, 15                       # 15 pickup events over a 300s game
     for seed in range(50):
-        rng = random.Random(seed)
+        random.seed(seed)
         g = ValetGame(present=False, num_clients=n, game_time=300)
-        for i in range(n):                   # all cars present and entered
+        for _ in range(n):                   # all cars present, entered and parked
             g.spawn_next_car()
         for c in g.car.sprites():
             c.ClientEntered = True
+            c.parked = True
         for _ in range(events):
             g.handle_event(_ev(g.Car_exit))
         called = sum(c.Client.sprite.ClientExited for c in g.car.sprites())
         assert called == n, f"only {called}/{n} clients called"
+
+
+def test_cannot_deliver_without_parking():
+    """Anti-cheat: a car must be parked at its assigned spot before it can be delivered."""
+    g = ValetGame(present=False, num_clients=1, game_time=60)
+    g.spawn_next_car()
+    c = g.car.sprites()[0]
+    c.ClientEntered = True
+    c.Client.sprite.ClientExited = True           # client waiting
+    c.active = False
+    c.rect.x, c.rect.y = 1130, 125                # straight to the exit, never parked
+    g.car.update(g.screen)
+    assert not c.SuccessDelivery and c.alive(), "delivered without parking at the spot (cheat!)"
+    c.rect.center = SPOT_XY[c.ParkingSpot]         # park at the assigned spot
+    g.car.update(g.screen)
+    assert c.parked
+    c.rect.x, c.rect.y = 1130, 125                 # then bring it to the exit
+    g.car.update(g.screen)
+    assert c.SuccessDelivery, "should deliver after parking then reaching the exit"
 
 
 class _FakeKeys:

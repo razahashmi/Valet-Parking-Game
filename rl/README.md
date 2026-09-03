@@ -40,12 +40,16 @@ It is also registered with Gymnasium: `import rl; gym.make("ValetPark-v0")`.
 | 4  | walk right       | steer right        |
 | 5  | enter the car you're standing on | step out of the car |
 
-**Observation** — `Box(-1, 1, (5 + 8·max_cars,))`, float32:
+**Observation** — `Box(-1, 1, (5 + 9·max_cars,))`, float32:
 `[player_x, player_y, driving, time_remaining, entrance_blocked]` then one **fixed slot
 per client** (slot = client index, stable across the whole episode even as cars are
 delivered), each `[present, car_x, car_y, sin(angle), cos(angle), parking_spot,
-client_waiting, is_active]`. Positions are normalized by the screen size; empty slots are
-zero. `max_cars` fixes the vector length so one policy transfers across a curriculum.
+client_waiting, is_active, parked]`. Positions are normalized by the screen size; empty
+slots are zero. `max_cars` fixes the vector length so one policy transfers across a curriculum.
+
+**Task is enforced (no cheating):** a car must actually be parked at its assigned numbered
+spot before its client is called and before it can be delivered — the agent cannot win by
+shuttling cars straight from the entrance to the exit. `parked` reports this per car.
 
 **Reward** (per step, tunable at the top of `valet_env.py`):
 `-0.01` step cost · `+10` per delivery · `-1` per collision · `-0.05` while the entrance
@@ -78,9 +82,10 @@ to train against the raw sparse reward.
   animation, so headless steps do a few wasted blits (throughput is still ~75k/s).
 - **Rect-based collisions.** Uses shrunk bounding boxes (`collide_rect_ratio(0.7)`),
   approximate for rotated cars; mask-based would be more precise.
-- **The spot is handed to the agent.** The observation includes each car's parking spot,
-  so there is nothing to *remember*. To study the memorization question in the top-level
-  README, add a mode that hides the spot and exposes car-model / client-avatar ids instead.
+- **The spot is handed to the agent (memory not yet required).** Parking at the correct
+  spot is now enforced, but the spot number is in the observation every frame, so the agent
+  never has to *remember* it. To study the memorization question in the top-level README,
+  add a mode that hides the spot and exposes car-model / client-avatar ids instead.
 
 ## Training
 

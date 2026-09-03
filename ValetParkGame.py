@@ -133,11 +133,11 @@ class ValetGame:
                 else:
                     self.spawn_next_car()
 
-        # A parked client comes out to collect their car. Call one client that has
-        # arrived but has not been called yet, so every client is eventually served.
+        # A client comes out to collect their car once it is parked at their spot.
+        # Call one parked-but-not-yet-called client, so every client is eventually served.
         if event.type == self.Car_exit:
             uncalled = [c for c in self.car.sprites()
-                        if c.ClientEntered and not c.Client.sprite.ClientExited]
+                        if c.parked and not c.Client.sprite.ClientExited]
             if uncalled:
                 choice(uncalled).ClientExit()
 

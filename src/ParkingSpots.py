@@ -54,3 +54,15 @@ def drawrightspot(initialx,initialy,depthx,heighty,spotnumber,screen,parkingfont
     spotnumber = pygame.transform.rotate(spotnumber, 90)
     screen.blit(spotnumber, (initialx +heighty -30 , initialy +30 ))
 
+
+def parking_spot_centers():
+    """Pixel centres of the 18 numbered spots (1001-1018), matching DrawParkingSpots."""
+    centers = {}
+    for i in range(6):
+        centers[1001 + i] = (430 + i * 100, 375)   # top row
+        centers[1007 + i] = (430 + i * 100, 525)   # bottom row
+    for i in range(3):
+        centers[1013 + i] = (167, 350 + i * 100)    # left column
+        centers[1016 + i] = (1202, 350 + i * 100)   # right column
+    return centers
+

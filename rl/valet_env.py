@@ -16,7 +16,8 @@ Observation (Box, normalized to [-1, 1]):
     [player_x, player_y, driving, time_remaining, entrance_blocked]
     followed by one FIXED slot per client (slot = client index, stable across the
     whole episode even as cars are delivered), each:
-    [present, car_x, car_y, sin(angle), cos(angle), spot, client_waiting, is_active]
+    [present, car_x, car_y, sin(angle), cos(angle), spot, client_waiting, is_active,
+     parked]  (parked = has been left at its assigned numbered spot)
 
 One step() advances the sim by ``frame_skip`` ticks with the action held (SPACE
 toggles only on the first tick); frame_skip>1 shortens the effective horizon.
@@ -43,7 +44,7 @@ from gymnasium import spaces
 from src.Car import Car
 from src.Player import Player
 from src.utils import Spots, CarSelection, GameTimer
-from src.ParkingSpots import DrawParkingSpots
+from src.ParkingSpots import DrawParkingSpots, parking_spot_centers
 from src.config import GameTime, Number_Clients, number_cars_available, ParkingSpots
 
 # Actions
@@ -68,18 +69,6 @@ SHAPE_K_WALK = 0.02       # per-pixel progress of the on-foot player toward the 
 ENTER_BONUS = 1.0         # one-off, the first time each car is entered
 WAIT_PENALTY = -0.02      # per tick per client waiting to be collected
 EXIT_TARGET = (1230, 150)
-
-
-def parking_spot_centers():
-    """Pixel centres of the 18 numbered spots, derived from ParkingSpots.DrawParkingSpots."""
-    centers = {}
-    for i in range(6):
-        centers[1001 + i] = (430 + i * 100, 375)   # top row
-        centers[1007 + i] = (430 + i * 100, 525)   # bottom row
-    for i in range(3):
-        centers[1013 + i] = (167, 350 + i * 100)    # left column
-        centers[1016 + i] = (1202, 350 + i * 100)   # right column
-    return centers
 
 
 class ValetParkEnv(gym.Env):
@@ -141,7 +130,7 @@ class ValetParkEnv(gym.Env):
         self._present = render_mode == "human"
 
         self.action_space = spaces.Discrete(6)
-        self.obs_size = 5 + self.max_cars * 8
+        self.obs_size = 5 + self.max_cars * 9
         self.observation_space = spaces.Box(low=-1.0, high=1.0,
                                             shape=(self.obs_size,), dtype=np.float32)
 
@@ -247,10 +236,12 @@ class ValetParkEnv(gym.Env):
                     self.pending += 1
                 else:
                     self._spawn_next()
-        if self.tick % self.exit_ticks == 0:
-            cars_here = self.car.sprites()
-            if cars_here and self.np_random.random() < self.exit_prob:
-                cars_here[int(self.np_random.integers(0, len(cars_here)))].ClientExit()
+        if self.tick % self.exit_ticks == 0 and self.np_random.random() < self.exit_prob:
+            # A client only comes out once their car is parked at its assigned spot.
+            eligible = [c for c in self.car.sprites()
+                        if c.parked and not c.Client.sprite.ClientExited]
+            if eligible:
+                eligible[int(self.np_random.integers(0, len(eligible)))].ClientExit()
 
         # --- static visual layers ---
         if draw:
@@ -368,10 +359,10 @@ class ValetParkEnv(gym.Env):
                                if c.Client.sprite.ClientExited)
         c = self.car_selected
         if self.driving and c is not None and c in self.car:
-            # Drive the held car toward its spot, or the exit once its client is waiting.
-            need_delivery = c.Client.sprite.ClientExited
-            goal = EXIT_TARGET if need_delivery else self.spot_xy.get(c.ParkingSpot, EXIT_TARGET)
-            goal_id = ("drive", id(c), need_delivery)
+            # Park at the assigned spot first; only head for the exit once parked AND called.
+            to_exit = c.parked and c.Client.sprite.ClientExited
+            goal = EXIT_TARGET if to_exit else self.spot_xy.get(c.ParkingSpot, EXIT_TARGET)
+            goal_id = ("drive", id(c), to_exit)
             dist = math.hypot(c.rect.centerx - goal[0], c.rect.centery - goal[1])
             if self._shape_prev is not None and goal_id == self._shape_goal:
                 r += SHAPE_K * (self._shape_prev - dist)
@@ -433,7 +424,7 @@ class ValetParkEnv(gym.Env):
             slot = self.car_slot.get(c)
             if slot is None or slot >= self.max_cars:
                 continue
-            base = 5 + slot * 8
+            base = 5 + slot * 9
             rad = math.radians(c.angle)
             obs[base + 0] = 1.0
             obs[base + 1] = c.rect.centerx / WIDTH
@@ -443,6 +434,7 @@ class ValetParkEnv(gym.Env):
             obs[base + 5] = (c.ParkingSpot - 1001) / 17.0
             obs[base + 6] = 1.0 if c.Client.sprite.ClientExited else 0.0
             obs[base + 7] = 1.0 if c.active else 0.0
+            obs[base + 8] = 1.0 if c.parked else 0.0
         return np.clip(obs, -1.0, 1.0)
 
     def _get_info(self):
