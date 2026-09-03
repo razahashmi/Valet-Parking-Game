@@ -22,6 +22,8 @@ def parse_args():
     p.add_argument("--frame-skip", type=int, default=4, help="must match training")
     p.add_argument("--num-clients", type=int, default=10)
     p.add_argument("--max-cars", type=int, default=10, help="must match training (obs size)")
+    p.add_argument("--arrival-prob", type=float, default=0.5, help="match training regime")
+    p.add_argument("--exit-prob", type=float, default=0.5, help="match training regime")
     p.add_argument("--render", choices=["human", "none"], default="human")
     p.add_argument("--stochastic", action="store_true",
                    help="sample actions instead of taking the greedy one")
@@ -33,7 +35,8 @@ def main():
     render_mode = None if args.render == "none" else "human"
     env = ValetParkEnv(render_mode=render_mode, game_time=args.game_time,
                        frame_skip=args.frame_skip, num_clients=args.num_clients,
-                       max_cars=args.max_cars)
+                       max_cars=args.max_cars, arrival_prob=args.arrival_prob,
+                       exit_prob=args.exit_prob)
     model = PPO.load(args.model)
     print(f"loaded {args.model}")
 

@@ -1,5 +1,6 @@
+import os
 import pygame
-from random import randint
+from random import randint, choice
 
 from src.ParkingSpots import DrawParkingSpots
 from src.Car import Car
@@ -8,180 +9,227 @@ from src.utils import *
 from src.config import *
 
 
-# Issues fixed in this pass:
-#  - IndexError: more cars tried to enter than there were clients (cars vs clients mismatch)
-#  - UnboundLocalError in the game timer when the entrance-blocked flag was 0
-#  - AttributeError: pressing SPACE while not standing on a car (NoneType.active)
-#  - Car would not drive after re-entering (space_pressed / Car_select desync)
-#  - Entrance-blocked detection was computed inside the event loop (stale/undefined)
-#  - Deferred-arrival logic could lose cars / never re-fire
-#  - Smoother accumulating time penalty + clear win / lose states
-#  - Car-vs-car collisions now block movement instead of passing through
+# Bugs fixed in this pass:
+#  - Re-entering a car made it drive/turn by itself: exiting a car left its
+#    activeforward / activebackward / direction flags set (and the KEYUP handler
+#    is gated on Car_select, so releasing the key could not clear them). Now the
+#    drive flags are reset whenever a car is entered or left.
+#  - CarSelection was mutating the global ParkingSpots list (shuffle + pop);
+#    it now receives a fresh copy.
+#  - The game was often unwinnable: pickups fired for a random car at 50%, so
+#    many clients were never called. Each pickup event now reliably calls one
+#    not-yet-called client, so every client can be delivered within the time.
 #
-# Next milestone (RL): extract this loop into a reset()/step()/observation/reward
-# environment so an agent can drive instead of the keyboard. See README.
+# The per-frame logic lives in ValetGame.step(events, dt) so it can be driven
+# headlessly by tests (see tests/) as well as by the real keyboard loop in run().
 
 
-def resolve_car_collisions(cars):
-    """Prevent the driven car from overlapping others by undoing its last move."""
-    overlap = pygame.sprite.collide_rect_ratio(0.7)  # 0.7 avoids false hits from rotated bounding boxes
-    sprites = cars.sprites()
-    for i in range(len(sprites)):
-        for j in range(i + 1, len(sprites)):
-            a, b = sprites[i], sprites[j]
-            if overlap(a, b):
-                if a.active:
-                    a.rect.center = a.prev_center
-                if b.active:
-                    b.rect.center = b.prev_center
+class ValetGame:
+    WIDTH, HEIGHT = 1366, 768
+    PENALTY_RATE = 0.2  # blocked time elapses 1.2x as fast
 
+    def __init__(self, present=True, game_time=GameTime, num_clients=Number_Clients):
+        self.present = present
+        if not present:
+            os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+            os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+        pygame.init()
+        if pygame.display.get_surface() is None:
+            pygame.display.set_mode((self.WIDTH, self.HEIGHT))
+        if present:
+            self.screen = pygame.display.get_surface()
+            pygame.display.set_caption("Valet-Park")
+            try:
+                pygame.display.set_icon(pygame.image.load('Resources/valet_icon.png'))
+            except pygame.error:
+                pass
+        else:
+            self.screen = pygame.Surface((self.WIDTH, self.HEIGHT))
 
-def spawn_next_car(cars, clients, index):
-    """Add the car for clients[index] to the group. Returns the next index."""
-    car_img_index, person, spot = clients[index]
-    cars.add(Car(spot, car_img_index, person))
-    return index + 1
+        self.clock = pygame.time.Clock()
+        self.parkingfont = pygame.font.Font('freesansbold.ttf', 20)
+        self.GameTimeFont = pygame.font.SysFont('calibri', 30)
+        self.background = pygame.image.load('Resources/Map.png').convert()
 
+        self.spots = pygame.sprite.GroupSingle()
+        self.spots.add(Spots())
+        self.player = pygame.sprite.GroupSingle()
+        self.player.add(Player())
+        self.car = pygame.sprite.Group()
 
-# Initialise pygame and the window
-pygame.init()
-clock = pygame.time.Clock()
-screen = pygame.display.set_mode((1366, 768))  # 720p
-parkingfont = pygame.font.Font('freesansbold.ttf', 20)
-GameTimeFont = pygame.font.SysFont('calibri', 30)
-background = pygame.image.load('Resources/Map.png')
+        self.game_time = game_time
+        # list(ParkingSpots): CarSelection pops from the list, so pass a fresh copy.
+        self.ClientsList = CarSelection(game_time, list(ParkingSpots),
+                                        num_clients, number_cars_available)
+        self.total_clients = len(self.ClientsList)
+        self.car_number = 0       # cars that have entered so far (index into ClientsList)
+        self.pending_cars = 0     # arrivals deferred because the entrance was blocked
+        self.penalty = 0.0        # extra seconds charged while the entrance is blocked
+        self.Car_select = False   # is the player currently driving a car?
+        self.Car_selected = None  # the car being driven
+        self.game_state = "playing"   # "playing" | "won" | "lost"
+        self.entrance_blocked = False
+        self.remaining = float(game_time)
+        self.elapsed = 0.0
+        self.running = True
 
-pygame.display.set_caption("Valet-Park")
-icon = pygame.image.load('Resources/valet_icon.png')
-pygame.display.set_icon(icon)
+        self.Car_enter = pygame.USEREVENT + 1
+        self.Car_exit = pygame.USEREVENT + 2
 
-# Sprite groups
-spots = pygame.sprite.GroupSingle()
-spots.add(Spots())
-player = pygame.sprite.GroupSingle()
-player.add(Player())
-car = pygame.sprite.Group()
+    # ------------------------------------------------------------------ helpers
+    def spawn_next_car(self):
+        car_img_index, person, spot = self.ClientsList[self.car_number]
+        self.car.add(Car(spot, car_img_index, person))
+        self.car_number += 1
 
-# Game state
-ClientsList = CarSelection(GameTime, ParkingSpots, Number_Clients, number_cars_available)
-total_clients = len(ClientsList)
-car_number = 0           # cars that have entered so far (index into ClientsList)
-pending_cars = 0         # arrivals deferred because the entrance was blocked
-penalty = 0.0            # extra seconds charged while the entrance is blocked
-PENALTY_RATE = 0.2       # blocked time elapses 1.2x as fast
-Car_select = False       # is the player currently driving a car?
-Car_selected = None      # the car being driven
-game_state = "playing"   # "playing" | "won" | "lost"
+    def resolve_car_collisions(self):
+        """Prevent the driven car from overlapping others by undoing its last move."""
+        overlap = pygame.sprite.collide_rect_ratio(0.7)  # avoid false hits from rotated boxes
+        sprites = self.car.sprites()
+        for i in range(len(sprites)):
+            for j in range(i + 1, len(sprites)):
+                a, b = sprites[i], sprites[j]
+                if overlap(a, b):
+                    if a.active:
+                        a.rect.center = a.prev_center
+                    if b.active:
+                        b.rect.center = b.prev_center
 
-# Arrival / departure events
-Car_enter = pygame.USEREVENT + 1
-Car_exit = pygame.USEREVENT + 2
-pygame.time.set_timer(Car_enter, 10000)  # every 10s a client may arrive
-pygame.time.set_timer(Car_exit, 20000)   # every 20s a client may come to collect
+    def _enter_car(self, candidate):
+        self.Car_selected = candidate
+        self.player.sprite.active = False
+        candidate.active = True
+        # Start from rest so stale flags can never make the car move on its own.
+        candidate.activeforward = False
+        candidate.activebackward = False
+        candidate.direction = 0
+        self.player.sprite.rect.x = -300
+        self.Car_select = True
 
-start_ticks = pygame.time.get_ticks()
-prev_ticks = start_ticks
-running = True
+    def _leave_car(self):
+        c = self.Car_selected
+        c.active = False
+        # Clear drive flags so the car does not keep moving / turning after we step out
+        # (and cannot resume by itself when re-entered).
+        c.activeforward = False
+        c.activebackward = False
+        c.direction = 0
+        self.player.sprite.active = True
+        self.player.sprite.rect.x = c.rect.x + 30
+        self.player.sprite.rect.y = c.rect.y + 70
+        self.Car_select = False
 
-# Game loop
-while running:
-    now = pygame.time.get_ticks()
-    dt = (now - prev_ticks) / 1000.0
-    prev_ticks = now
-    seconds = (now - start_ticks) / 1000.0
-
-    screen.blit(background, (0, 0))
-
-    # Is a car physically sitting on / driving through the entrance right now?
-    entrance_blocked = pygame.sprite.spritecollideany(spots.sprite, car) is not None
-    if entrance_blocked and game_state == "playing":
-        penalty += dt * PENALTY_RATE
-
-    for event in pygame.event.get():
+    # ------------------------------------------------------------------ events
+    def handle_event(self, event):
         if event.type == pygame.QUIT:
-            running = False
+            self.running = False
+            return
 
         # A new client may arrive
-        if event.type == Car_enter:
-            if car_number + pending_cars < total_clients and randint(0, 1) == 1:
-                if entrance_blocked:
-                    pending_cars += 1
-                    print("Entrance blocked - arrival deferred")
+        if event.type == self.Car_enter:
+            if self.car_number + self.pending_cars < self.total_clients and randint(0, 1) == 1:
+                if self.entrance_blocked:
+                    self.pending_cars += 1
                 else:
-                    car_number = spawn_next_car(car, ClientsList, car_number)
+                    self.spawn_next_car()
 
-        # A parked client may come out to collect their car
-        if event.type == Car_exit:
-            cars_here = car.sprites()
-            if cars_here and randint(0, 1) == 1:
-                cars_here[randint(0, len(cars_here) - 1)].ClientExit()
+        # A client comes out to collect their car once it is parked at their spot.
+        # Call one parked-but-not-yet-called client, so every client is eventually served.
+        if event.type == self.Car_exit:
+            uncalled = [c for c in self.car.sprites()
+                        if c.parked and not c.Client.sprite.ClientExited]
+            if uncalled:
+                choice(uncalled).ClientExit()
 
         if event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_ESCAPE and game_state != "playing":
-                running = False
+            if event.key == pygame.K_ESCAPE and self.game_state != "playing":
+                self.running = False
 
             # Enter / leave the car the player is standing on
-            if event.key == pygame.K_SPACE and car:
-                if not Car_select:
-                    candidate = pygame.sprite.spritecollideany(player.sprite, car)
+            if event.key == pygame.K_SPACE and self.car:
+                if not self.Car_select:
+                    candidate = pygame.sprite.spritecollideany(self.player.sprite, self.car)
                     if candidate is not None:
-                        Car_selected = candidate
-                        player.sprite.active = False
-                        Car_selected.active = True
-                        player.sprite.rect.x = -300
-                        Car_select = True
+                        self._enter_car(candidate)
                 else:
-                    player.sprite.active = True
-                    Car_selected.active = False
-                    player.sprite.rect.x = Car_selected.rect.x + 30
-                    player.sprite.rect.y = Car_selected.rect.y + 70
-                    Car_select = False
+                    self._leave_car()
 
             # Drive the active car
-            if Car_select:
-                if event.key == pygame.K_RIGHT: Car_selected.direction += 1
-                if event.key == pygame.K_LEFT: Car_selected.direction -= 1
-                if event.key == pygame.K_UP: Car_selected.activeforward = True
-                if event.key == pygame.K_DOWN: Car_selected.activebackward = True
+            if self.Car_select:
+                if event.key == pygame.K_RIGHT: self.Car_selected.direction += 1
+                if event.key == pygame.K_LEFT: self.Car_selected.direction -= 1
+                if event.key == pygame.K_UP: self.Car_selected.activeforward = True
+                if event.key == pygame.K_DOWN: self.Car_selected.activebackward = True
 
-        if event.type == pygame.KEYUP and Car_select:
-            if event.key == pygame.K_RIGHT: Car_selected.direction -= 1
-            if event.key == pygame.K_LEFT: Car_selected.direction += 1
-            if event.key == pygame.K_UP: Car_selected.activeforward = False
-            if event.key == pygame.K_DOWN: Car_selected.activebackward = False
+        if event.type == pygame.KEYUP and self.Car_select:
+            if event.key == pygame.K_RIGHT: self.Car_selected.direction -= 1
+            if event.key == pygame.K_LEFT: self.Car_selected.direction += 1
+            if event.key == pygame.K_UP: self.Car_selected.activeforward = False
+            if event.key == pygame.K_DOWN: self.Car_selected.activebackward = False
 
-    # Release one deferred arrival now that the entrance is clear.
-    # Recompute here so a car spawned this frame counts as blocking.
-    entrance_blocked = pygame.sprite.spritecollideany(spots.sprite, car) is not None
-    if pending_cars > 0 and not entrance_blocked and car_number < total_clients:
-        car_number = spawn_next_car(car, ClientsList, car_number)
-        pending_cars -= 1
+    # ------------------------------------------------------------------ per frame
+    def step(self, events, dt):
+        self.elapsed += dt
+        seconds = self.elapsed
 
-    if game_state == "lost":
-        screen.fill((0, 0, 0))
-        screen.blit(GameTimeFont.render("Game Over", True, (255, 255, 255)), (600, 384))
-    elif game_state == "won":
-        screen.fill((1, 50, 32))
-        screen.blit(GameTimeFont.render("Congrats! You Win", True, (255, 255, 255)), (550, 384))
-    else:
-        DrawParkingSpots(21, screen, parkingfont)
-        spots.draw(screen)
-        car.draw(screen)
-        player.draw(screen)
-        player.update()
-        car.update(screen)
-        resolve_car_collisions(car)
+        self.screen.blit(self.background, (0, 0))
 
-        remaining = GameTime - seconds - penalty
-        time_up = GameTimer(remaining, entrance_blocked, GameTimeFont, screen)
+        # Is a car physically sitting on / driving through the entrance right now?
+        self.entrance_blocked = pygame.sprite.spritecollideany(self.spots.sprite, self.car) is not None
+        if self.entrance_blocked and self.game_state == "playing":
+            self.penalty += dt * self.PENALTY_RATE
 
-        # Win once every client has arrived and every car has been delivered.
-        if car_number >= total_clients and len(car) == 0:
-            game_state = "won"
-        elif time_up:
-            game_state = "lost"
+        for event in events:
+            self.handle_event(event)
 
-    pygame.display.update()
-    clock.tick(60)  # 60 FPS
+        # Release one deferred arrival now that the entrance is clear.
+        self.entrance_blocked = pygame.sprite.spritecollideany(self.spots.sprite, self.car) is not None
+        if self.pending_cars > 0 and not self.entrance_blocked and self.car_number < self.total_clients:
+            self.spawn_next_car()
+            self.pending_cars -= 1
 
-pygame.quit()
+        if self.game_state == "lost":
+            self.screen.fill((0, 0, 0))
+            self.screen.blit(self.GameTimeFont.render("Game Over", True, (255, 255, 255)), (600, 384))
+        elif self.game_state == "won":
+            self.screen.fill((1, 50, 32))
+            self.screen.blit(self.GameTimeFont.render("Congrats! You Win", True, (255, 255, 255)), (550, 384))
+        else:
+            DrawParkingSpots(21, self.screen, self.parkingfont)
+            self.spots.draw(self.screen)
+            self.car.draw(self.screen)
+            self.player.draw(self.screen)
+            self.player.update()
+            self.car.update(self.screen)
+            self.resolve_car_collisions()
+
+            self.remaining = self.game_time - seconds - self.penalty
+            time_up = GameTimer(self.remaining, self.entrance_blocked, self.GameTimeFont, self.screen)
+
+            # Win once every client has arrived and every car has been delivered.
+            if self.car_number >= self.total_clients and len(self.car) == 0:
+                self.game_state = "won"
+            elif time_up:
+                self.game_state = "lost"
+
+    # ------------------------------------------------------------------ human loop
+    def run(self):
+        pygame.time.set_timer(self.Car_enter, 10000)  # every 10s a client may arrive
+        pygame.time.set_timer(self.Car_exit, 20000)   # every 20s a client is called
+        prev_ticks = pygame.time.get_ticks()
+        while self.running:
+            now = pygame.time.get_ticks()
+            dt = (now - prev_ticks) / 1000.0
+            prev_ticks = now
+            self.step(pygame.event.get(), dt)
+            pygame.display.update()
+            self.clock.tick(60)  # 60 FPS
+        pygame.quit()
+
+
+def main():
+    ValetGame(present=True).run()
+
+
+if __name__ == "__main__":
+    main()
