@@ -80,6 +80,19 @@ def test_pickup_reaches_every_client():
         assert called == n, f"only {called}/{n} clients called"
 
 
+def test_pickup_skips_clients_still_walking_in():
+    """A pickup must not be wasted on a client who hasn't finished walking into the shop."""
+    for seed in range(20):
+        random.seed(seed)
+        g = ValetGame(present=False, num_clients=2, game_time=300)
+        g.spawn_next_car(); g.spawn_next_car()
+        walking, inside = g.car.sprites()
+        walking.parked = inside.parked = True
+        inside.ClientEntered = True
+        g.handle_event(_ev(g.Car_exit))
+        assert inside.Client.sprite.ClientExited, f"seed {seed}: pickup was wasted"
+
+
 def test_cannot_deliver_without_parking():
     """Anti-cheat: a car must be parked at its assigned spot before it can be delivered."""
     g = ValetGame(present=False, num_clients=1, game_time=60)
