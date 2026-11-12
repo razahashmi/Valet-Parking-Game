@@ -9,6 +9,40 @@ from pygame.math import Vector2
 
 _SPOT_CENTERS = parking_spot_centers()
 PARK_TOLERANCE = 60  # px: how close the car centre must get to its spot to count as parked
+COLLISION_RATIO = 0.7  # shrink bounding boxes before testing overlap (rotated boxes are loose)
+ENTRANCE_LANE_MAX_Y = 240  # car centres above this are in the entrance lane (top-left)
+
+
+def _shrunk(rect, ratio=COLLISION_RATIO):
+    # Same box pygame.sprite.collide_rect_ratio(ratio) tests.
+    return rect.inflate(rect.width * ratio - rect.width, rect.height * ratio - rect.height)
+
+
+def _overlap_area(rect, others):
+    box = _shrunk(rect)
+    total = 0
+    for o in others:
+        clip = box.clip(_shrunk(o.rect))
+        total += clip.width * clip.height
+    return total
+
+
+def resolve_car_collisions(cars):
+    """Undo a driven car's move this tick (position *and* rotation) if it ran into another
+    car, i.e. made the overlap with the other cars larger than before the move. Moves that
+    keep or shrink an existing overlap are allowed, so a car can always back out -- e.g. when
+    a newly arriving car rolls into it at the entrance -- instead of being pinned in place
+    with every move undone. Returns the number of moves undone (bumps) this tick."""
+    bumps = 0
+    for car in cars:
+        if not car.active or car._pose is None:
+            continue
+        others = [o for o in cars if o is not car]
+        after = _overlap_area(car.rect, others)
+        if after and after > _overlap_area(car._pose[0], others):
+            car.restore_pose()
+            bumps += 1
+    return bumps
 
 
 
@@ -78,7 +112,7 @@ class Car(pygame.sprite.Sprite):
         self.original_image =  pygame.transform.rotate(pygame.transform.scale(self.CarImg[int(self.CarImgIndex)], (70, 150)),-90)
         self.image = self.original_image
         self.rect =  self.image.get_rect(center = (-100,160))
-        self.prev_center = self.rect.center  # last position, used to undo a move on collision
+        self._pose = None  # pose before this tick's move, used to undo it on collision
         self.ParkingSpotfont = pygame.font.SysFont('Comic Sans MS', 20)
         self.ParkingSpot = ParkingSpot
         self.spot_center = _SPOT_CENTERS.get(ParkingSpot)
@@ -114,8 +148,17 @@ class Car(pygame.sprite.Sprite):
         if self.direction == -1:
             self.forward.rotate_ip(-self.rotation_speed)
 
+    def save_pose(self):
+        """Remember position *and* heading, so a colliding move can be fully undone."""
+        self._pose = (self.rect.copy(), self.angle, pygame.math.Vector2(self.forward))
+
+    def restore_pose(self):
+        rect, self.angle, forward = self._pose
+        self.forward = pygame.math.Vector2(forward)
+        self.image = pygame.transform.rotate(self.original_image, self.angle)
+        self.rect = rect.copy()
+
     def accelerate(self):
-        self.prev_center = self.rect.center  # remember where we were before moving
         if self.activeforward:
             self.rect.center += self.forward * 3
         if self.activebackward:
@@ -123,8 +166,12 @@ class Car(pygame.sprite.Sprite):
 
 
     def boundaries(self):
-        if self.rect.x <= 90:
-            self.rect.x = 90
+        # Arrivals rest at x=40 in the entrance lane (top-left); the curb at x=90 only
+        # starts below it. A single x>=90 limit made a car jump 50 px right the moment
+        # it was driven out of the entrance -- straight into any car parked there.
+        min_x = 40 if self.rect.centery < ENTRANCE_LANE_MAX_Y else 90
+        if self.rect.x <= min_x:
+            self.rect.x = min_x
         elif self.rect.x >= 1130:
             self.rect.x = 1130
         if self.rect.y <= 125:
@@ -173,6 +220,7 @@ class Car(pygame.sprite.Sprite):
         if self.ClientEntered != True:
             self.initial_animation(screen)
         if self.active:
+            self.save_pose()
             self.set_rotation()
             self.get_rotation()
             self.accelerate()

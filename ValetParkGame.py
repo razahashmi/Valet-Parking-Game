@@ -3,7 +3,7 @@ import pygame
 from random import randint, choice
 
 from src.ParkingSpots import DrawParkingSpots
-from src.Car import Car
+from src.Car import Car, resolve_car_collisions
 from src.Player import Player
 from src.utils import *
 from src.config import *
@@ -83,17 +83,8 @@ class ValetGame:
         self.car_number += 1
 
     def resolve_car_collisions(self):
-        """Prevent the driven car from overlapping others by undoing its last move."""
-        overlap = pygame.sprite.collide_rect_ratio(0.7)  # avoid false hits from rotated boxes
-        sprites = self.car.sprites()
-        for i in range(len(sprites)):
-            for j in range(i + 1, len(sprites)):
-                a, b = sprites[i], sprites[j]
-                if overlap(a, b):
-                    if a.active:
-                        a.rect.center = a.prev_center
-                    if b.active:
-                        b.rect.center = b.prev_center
+        """Stop the driven car from running into others (shared with the RL env)."""
+        resolve_car_collisions(self.car.sprites())
 
     def _enter_car(self, candidate):
         self.Car_selected = candidate

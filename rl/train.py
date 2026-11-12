@@ -110,13 +110,20 @@ def add_env_args(p):
     p.add_argument("--exit-prob", type=float, default=1.0,
                    help="chance a scheduled pickup fires (1.0 = human game; lower values "
                         "can make episodes unwinnable)")
+    p.add_argument("--no-shuffle-slots", dest="shuffle_slots", action="store_false",
+                   help="assign observation slots by arrival order instead of shuffling "
+                        "them per episode")
+    p.add_argument("--random-start", action="store_true",
+                   help="start the valet at a random spot in the lot (curriculum aid: "
+                        "teaches walking to a car from anywhere)")
 
 
 def env_kwargs(args, render_mode=None):
     return dict(render_mode=render_mode, game_time=args.game_time,
                 frame_skip=args.frame_skip, num_clients=args.num_clients,
                 max_cars=args.max_cars, arrival_prob=args.arrival_prob,
-                exit_prob=args.exit_prob)
+                exit_prob=args.exit_prob, shuffle_slots=args.shuffle_slots,
+                random_start=args.random_start)
 
 
 def parse_args(argv=None):
@@ -178,11 +185,15 @@ def main():
                          best_model_save_path=os.path.join(args.logdir, "best")),
     ]
 
+    lr = linear_schedule(args.lr) if args.lr_schedule else args.lr
     if args.load:
-        print(f"resuming from {args.load}")
-        model = PPO.load(args.load, env=env, tensorboard_log=args.logdir)
+        print(f"resuming from {args.load} (lr={args.lr}{', decaying' if args.lr_schedule else ''}, "
+              f"ent_coef={args.ent_coef})")
+        # --lr / --lr-schedule / --ent-coef apply to resumed runs too: a new curriculum
+        # stage often needs gentler settings than the ones the saved model finished with.
+        model = PPO.load(args.load, env=env, tensorboard_log=args.logdir,
+                         custom_objects={"learning_rate": lr, "ent_coef": args.ent_coef})
     else:
-        lr = linear_schedule(args.lr) if args.lr_schedule else args.lr
         model = PPO(
             "MlpPolicy", env, verbose=1, seed=args.seed,
             tensorboard_log=args.logdir,

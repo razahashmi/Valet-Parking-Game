@@ -14,6 +14,10 @@ Action space (Discrete(6)) mirrors the keyboard controls:
 
 Observation (Box, normalized to [-1, 1]):
     [player_x, player_y, driving, time_remaining, entrance_blocked]
+    then a FOCUS block describing the car the valet is working on -- the car being
+    driven, otherwise the nearest car that needs work (not parked yet, or its client is
+    waiting) -- as that car's slot fields (below) plus [rel_x, rel_y], its offset from
+    the valet (the player on foot, or the driven car); all zero when no car needs work;
     followed by one FIXED slot per client (slot = client index, stable across the
     whole episode even as cars are delivered), each:
     [present, car_x, car_y, sin(angle), cos(angle), spot, client_waiting, is_active,
@@ -21,6 +25,8 @@ Observation (Box, normalized to [-1, 1]):
     parked = has been left at its assigned numbered spot; target_dx/dy = how far the car
     still has to move to reach its current target: its spot until parked, then the exit
     zone (zero once inside it). The spot ID stays in the slot for memory experiments.
+    The focus block is what lets one skill work for every car: with slots alone, a policy
+    trained on 1 client only ever learns to read slot 0.
 
 One step() advances the sim by ``frame_skip`` ticks with the action held (SPACE
 toggles only on the first tick); frame_skip>1 shortens the effective horizon.
@@ -47,7 +53,7 @@ import pygame.surfarray  # noqa: F401  (needed for rgb_array rendering)
 import gymnasium as gym
 from gymnasium import spaces
 
-from src.Car import Car
+from src.Car import Car, resolve_car_collisions
 from src.Player import Player
 from src.utils import Spots, CarSelection, GameTimer
 from src.ParkingSpots import DrawParkingSpots, parking_spot_centers
@@ -60,14 +66,20 @@ NOOP, UP, DOWN, LEFT, RIGHT, SPACE = range(6)
 WIDTH, HEIGHT = 1366, 768
 GLOBAL_OBS = 5      # player_x, player_y, driving, time_remaining, entrance_blocked
 SLOT_SIZE = 11      # per-client fields, see the module docstring
+FOCUS_SIZE = SLOT_SIZE + 2  # the focus car's slot fields + its offset from the valet
+SLOTS_START = GLOBAL_OBS + FOCUS_SIZE
 PLAYER_SPEED = 3
 PENALTY_RATE = 0.2          # blocked time elapses 1.2x as fast
 
 # Reward shaping (tune these for your experiments)
 STEP_COST = -0.01           # mild time pressure every tick
 DELIVERY_REWARD = 10.0      # per car handed back to its client
-COLLISION_PENALTY = -1.0    # per collision the driven car causes
-BLOCKED_PENALTY = -0.05     # per tick the entrance is obstructed
+COLLISION_PENALTY = -1.0    # per bump: each time the driven car runs into another car
+PUSH_PENALTY = -0.01        # per tick it is held pressed against another car
+# Blocked time already runs the clock 1.2x fast; this extra charge only doubles the cost
+# of a blocked tick. At -0.05 (6x) clearing the entrance outweighed everything else: agents
+# learned to drag each arrival a few metres and abandon it unparked, clogging the lot.
+BLOCKED_PENALTY = -0.01     # per tick the entrance is obstructed
 WIN_BONUS = 50.0            # all clients served before time ran out
 
 # Dense shaping (disable with reward_shaping=False).
@@ -77,8 +89,12 @@ WIN_BONUS = 50.0            # all clients served before time ran out
 # total progress shaping equals Phi(end) - Phi(start), i.e. the progress actually made.
 SHAPE_K = 0.02            # per pixel of task progress (car -> its spot -> the exit)
 SHAPE_K_WALK = 0.01       # per pixel the valet closes on the nearest car needing work
+PARK_K = 5.0              # potential per car parked at its spot (or delivered)
 ENTER_BONUS = 1.0         # one-off, the first time each car is entered (bounded per car)
-WAIT_PENALTY = -0.02      # per tick per client waiting to be collected
+# Per tick per client who has dropped off a car and not yet got it back -- counted from
+# drop-off, not from being called, so it cannot be dodged by never parking (a client is
+# only called once their car is parked).
+WAIT_PENALTY = -0.005
 
 # Geometry the shaping measures against (must match src/Car.py).
 CAR_W, CAR_H = 150, 70        # unrotated car rect (sprite is 70x150 rotated by -90 deg)
@@ -108,7 +124,7 @@ class ValetParkEnv(gym.Env):
                  arrival_interval_s=10.0, exit_interval_s=20.0,
                  num_clients=Number_Clients, num_car_models=number_cars_available,
                  reward_shaping=True, frame_skip=1, max_cars=None,
-                 arrival_prob=0.5, exit_prob=1.0):
+                 arrival_prob=0.5, exit_prob=1.0, shuffle_slots=True, random_start=False):
         super().__init__()
         assert render_mode in (None, "human", "rgb_array")
         self.render_mode = render_mode
@@ -124,6 +140,8 @@ class ValetParkEnv(gym.Env):
         # parked client). Lowering exit_prob can make episodes unwinnable by luck.
         self.arrival_prob = float(arrival_prob)
         self.exit_prob = float(exit_prob)
+        self.shuffle_slots = bool(shuffle_slots)
+        self.random_start = bool(random_start)
         self.num_car_models = int(num_car_models)
         # Observation capacity. Keep this fixed across a curriculum so one policy keeps
         # working as num_clients grows; it must be >= num_clients.
@@ -165,14 +183,13 @@ class ValetParkEnv(gym.Env):
         self.parkingfont = pygame.font.Font('freesansbold.ttf', 20)
         self.timefont = pygame.font.SysFont('calibri', 30)
         self.background = pygame.image.load('Resources/Map.png').convert()
-        self._overlap = pygame.sprite.collide_rect_ratio(0.7)
 
         # Only spend time drawing when someone will look at the pixels.
         self._draw_visuals = render_mode in ("human", "rgb_array")
         self._present = render_mode == "human"
 
         self.action_space = spaces.Discrete(6)
-        self.obs_size = GLOBAL_OBS + self.max_cars * SLOT_SIZE
+        self.obs_size = SLOTS_START + self.max_cars * SLOT_SIZE
         self.observation_space = spaces.Box(low=-1.0, high=1.0,
                                             shape=(self.obs_size,), dtype=np.float32)
 
@@ -197,6 +214,7 @@ class ValetParkEnv(gym.Env):
         self._pending_reward = 0.0  # event rewards accrued within the current tick
         self._banked = 0.0          # shaping progress of cars already delivered
         self._phi_prev = 0.0        # potential at the end of the previous tick
+        self._bumping = False       # was the driven car pressed against another last tick?
 
     # ------------------------------------------------------------------ Gym API
     def reset(self, *, seed=None, options=None):
@@ -209,6 +227,13 @@ class ValetParkEnv(gym.Env):
         self.player = pygame.sprite.GroupSingle()
         self.player.add(Player())
         self.player.sprite.active = False  # the env drives the player directly
+        if self.random_start:
+            # Anywhere the player may walk (Player.boundaries). With a fixed start, a
+            # 1-client curriculum stage only ever walks one route, so the agent memorizes
+            # it and is lost when a later car needs it to walk from somewhere else (e.g.
+            # from the exit after a delivery).
+            self.player.sprite.rect.topleft = (int(self.np_random.integers(90, 1251)),
+                                               int(self.np_random.integers(125, 721)))
         self.car = pygame.sprite.Group()
 
         # list(ParkingSpots): CarSelection pops from the list, so pass a fresh copy.
@@ -226,9 +251,15 @@ class ValetParkEnv(gym.Env):
         self._entrance_blocked = False
         self._remaining = float(self.game_time)
         self.car_slot = {}
+        # Which observation slot each client gets (stable for the episode). Shuffled by
+        # default so no slot is special: otherwise a 1-client curriculum stage only ever
+        # fills slot 0 and the policy learns to read nothing else.
+        self._slot_order = (self.np_random.permutation(self.max_cars) if self.shuffle_slots
+                            else np.arange(self.max_cars))
         self._bonused = set()
         self._pending_reward = 0.0
         self._banked = 0.0
+        self._bumping = False
         self._phi_prev = self._potential()
         return self._get_obs(), self._get_info()
 
@@ -294,7 +325,12 @@ class ValetParkEnv(gym.Env):
             self._move_player(action)
         before = self.car.sprites()
         self.car.update(surface)  # moves cars, animates clients, handles delivery + kill
-        collisions = self._resolve_collisions()
+        # Charge a bump once, when the driven car runs into another car; holding it there
+        # costs time but is not charged again (a per-tick charge made one stuck episode
+        # worth ~-4000 and drowned out every other learning signal).
+        bumping = self._resolve_collisions() > 0
+        collisions = int(bumping and not self._bumping)
+        self._bumping = bumping
         delivered = [c for c in before if c.SuccessDelivery]
         deliveries = len(delivered)
         self.delivered_total += deliveries
@@ -317,7 +353,7 @@ class ValetParkEnv(gym.Env):
         # --- reward ---
         reward = STEP_COST
         reward += DELIVERY_REWARD * deliveries
-        reward += COLLISION_PENALTY * collisions
+        reward += COLLISION_PENALTY * collisions + PUSH_PENALTY * bumping
         if entrance_blocked:
             reward += BLOCKED_PENALTY
         if self.reward_shaping:
@@ -355,7 +391,8 @@ class ValetParkEnv(gym.Env):
         car_img_index, person, spot = self.clients[self.cars_entered]
         car = Car(spot, car_img_index, person)
         self.car.add(car)
-        self.car_slot[car] = self.cars_entered  # stable observation slot = client index
+        i = self.cars_entered  # client index; beyond max_cars the car is simply not observed
+        self.car_slot[car] = int(self._slot_order[i]) if i < self.max_cars else i
         self.cars_entered += 1
 
     def _move_player(self, action):
@@ -403,8 +440,9 @@ class ValetParkEnv(gym.Env):
         phi = self._potential()
         r = phi - self._phi_prev
         self._phi_prev = phi
-        r += WAIT_PENALTY * sum(1 for c in self.car.sprites()
-                                if c.Client.sprite.ClientExited)
+        # Clients who have dropped off (or are queued at the blocked entrance) and are not
+        # yet served.
+        r += WAIT_PENALTY * (self.cars_entered + self.pending - self.delivered_total)
         return r
 
     def _target_offset(self, c):
@@ -425,10 +463,7 @@ class ValetParkEnv(gym.Env):
         """Nearest car that still needs the valet (not parked yet, or its client is
         waiting), measured from the valet's body -- the player on foot, or the car being
         driven, which is itself excluded. Returns (car, distance) or (None, 0.0)."""
-        if self.driving and self.car_selected is not None:
-            bx, by = self.car_selected.rect.center
-        else:
-            bx, by = self.player.sprite.rect.center
+        bx, by = self._valet_body()
         best, best_d = None, 0.0
         for c in self.car.sprites():
             if self.driving and c is self.car_selected:
@@ -441,7 +476,8 @@ class ValetParkEnv(gym.Env):
         return best, best_d
 
     def _potential(self):
-        """Phi(s): task progress minus how far the valet is from the next car needing work.
+        """Phi(s): task progress (pixels of car travel, plus PARK_K per car parked or
+        delivered) minus how far the valet is from the next car needing work.
 
         A function of the current state only (car positions/flags, who is driving, the
         player's position, and progress banked by delivered cars), so the shaping it
@@ -452,23 +488,16 @@ class ValetParkEnv(gym.Env):
         for c in self.car.sprites():
             progress += max(0.0, self._full_work[c.ParkingSpot] - self._remaining_work(c))
         _, gap = self._focus_car()
-        return SHAPE_K * progress - SHAPE_K_WALK * gap
+        # Parked is latched until delivery, and delivered cars stay counted, so this term
+        # only ever steps up: a discrete reward for parking that cannot be farmed.
+        parked = self.delivered_total + sum(1 for c in self.car.sprites() if c.parked)
+        return SHAPE_K * progress + PARK_K * parked - SHAPE_K_WALK * gap
 
     def _resolve_collisions(self):
-        """Undo the driven car's move if it overlaps another car; return collision count."""
-        sprites = self.car.sprites()
-        count = 0
-        for i in range(len(sprites)):
-            for j in range(i + 1, len(sprites)):
-                a, b = sprites[i], sprites[j]
-                if self._overlap(a, b):
-                    if a.active:
-                        a.rect.center = a.prev_center
-                        count += 1
-                    if b.active:
-                        b.rect.center = b.prev_center
-                        count += 1
-        return count
+        """Undo the driven car's move (position and rotation) if it ran into another car;
+        return how many moves were undone. Shared with the human game. Being hit by an
+        arriving car is not penalized, and the driven car can always back away."""
+        return resolve_car_collisions(self.car.sprites())
 
     def _get_obs(self):
         obs = np.zeros(self.obs_size, dtype=np.float32)
@@ -479,25 +508,46 @@ class ValetParkEnv(gym.Env):
         obs[3] = self._remaining / self.game_time
         obs[4] = 1.0 if self._entrance_blocked else 0.0
 
+        f = self._obs_focus_car()
+        if f is not None:
+            bx, by = self._valet_body()
+            obs[GLOBAL_OBS:GLOBAL_OBS + SLOT_SIZE] = self._car_features(f)
+            obs[GLOBAL_OBS + SLOT_SIZE] = (f.rect.centerx - bx) / WIDTH
+            obs[GLOBAL_OBS + SLOT_SIZE + 1] = (f.rect.centery - by) / HEIGHT
+
         for c in self.car.sprites():
             slot = self.car_slot.get(c)
             if slot is None or slot >= self.max_cars:
                 continue
-            base = GLOBAL_OBS + slot * SLOT_SIZE
-            rad = math.radians(c.angle)
-            obs[base + 0] = 1.0
-            obs[base + 1] = c.rect.centerx / WIDTH
-            obs[base + 2] = c.rect.centery / HEIGHT
-            obs[base + 3] = math.sin(rad)
-            obs[base + 4] = math.cos(rad)
-            obs[base + 5] = (c.ParkingSpot - 1001) / 17.0
-            obs[base + 6] = 1.0 if c.Client.sprite.ClientExited else 0.0
-            obs[base + 7] = 1.0 if c.active else 0.0
-            obs[base + 8] = 1.0 if c.parked else 0.0
-            dx, dy = self._target_offset(c)
-            obs[base + 9] = dx / WIDTH
-            obs[base + 10] = dy / HEIGHT
+            base = SLOTS_START + slot * SLOT_SIZE
+            obs[base:base + SLOT_SIZE] = self._car_features(c)
         return np.clip(obs, -1.0, 1.0)
+
+    def _car_features(self, c):
+        """The SLOT_SIZE observation fields for car ``c`` (layout in the module docstring)."""
+        rad = math.radians(c.angle)
+        dx, dy = self._target_offset(c)
+        return (1.0,
+                c.rect.centerx / WIDTH, c.rect.centery / HEIGHT,
+                math.sin(rad), math.cos(rad),
+                (c.ParkingSpot - 1001) / 17.0,
+                1.0 if c.Client.sprite.ClientExited else 0.0,
+                1.0 if c.active else 0.0,
+                1.0 if c.parked else 0.0,
+                dx / WIDTH, dy / HEIGHT)
+
+    def _valet_body(self):
+        """Centre of whatever the agent moves: the driven car, or the player on foot."""
+        if self.driving and self.car_selected is not None:
+            return self.car_selected.rect.center
+        return self.player.sprite.rect.center
+
+    def _obs_focus_car(self):
+        """The car in the observation's focus block: the one being driven, otherwise the
+        nearest car needing work (the same car the walk shaping steers toward)."""
+        if self.driving and self.car_selected is not None:
+            return self.car_selected
+        return self._focus_car()[0]
 
     def _get_info(self):
         return {
