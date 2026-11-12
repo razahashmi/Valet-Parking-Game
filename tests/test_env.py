@@ -16,6 +16,7 @@ os.chdir(ROOT)
 sys.path.insert(0, ROOT)
 
 import numpy as np
+import pygame
 from stable_baselines3.common.env_checker import check_env
 import rl.valet_env as valet_env
 from rl.valet_env import ValetParkEnv, NOOP, UP, DOWN, LEFT, RIGHT, SPACE
@@ -35,11 +36,11 @@ def test_check_env_passes():
 def test_obs_size_and_parked_bit():
     e = ValetParkEnv(render_mode=None, game_time=60, num_clients=1, max_cars=10)
     e.reset(seed=0)
-    assert e.observation_space.shape == (115,), e.observation_space.shape  # 5 + 11*10
+    assert e.observation_space.shape == (128,), e.observation_space.shape  # 5 + 13 + 11*10
     e._spawn_next()
     c = e.car.sprites()[0]
     c.ClientEntered = True
-    base = valet_env.GLOBAL_OBS + e.car_slot[c] * valet_env.SLOT_SIZE
+    base = valet_env.SLOTS_START + e.car_slot[c] * valet_env.SLOT_SIZE
     assert e._get_obs()[base + 8] == 0.0, "parked bit set before parking"
     c.active = False
     c.rect.center = e.spot_xy[c.ParkingSpot]
@@ -56,7 +57,7 @@ def test_obs_target_offset_points_to_spot_then_exit():
         e._spawn_next()
     c = e.car.sprites()[0]
     c.ClientEntered = True
-    base = valet_env.GLOBAL_OBS + e.car_slot[c] * valet_env.SLOT_SIZE
+    base = valet_env.SLOTS_START + e.car_slot[c] * valet_env.SLOT_SIZE
     sx, sy = e.spot_xy[c.ParkingSpot]
     c.rect.center = (sx - 200, sy + 100)       # 200 px left of and 100 px below its spot
     o = e._get_obs()
@@ -71,6 +72,213 @@ def test_obs_target_offset_points_to_spot_then_exit():
     c.rect.x, c.rect.y = 1130, 125             # inside the delivery zone
     o = e._get_obs()
     assert o[base + 9] == 0.0 and o[base + 10] == 0.0
+    e.close()
+
+
+def _focus_block(o):
+    return o[valet_env.GLOBAL_OBS:valet_env.SLOTS_START]
+
+
+def _slot_block(e, o, c):
+    base = valet_env.SLOTS_START + e.car_slot[c] * valet_env.SLOT_SIZE
+    return o[base:base + valet_env.SLOT_SIZE]
+
+
+def test_obs_focus_block_tracks_the_car_being_worked_on():
+    """The focus block shows the same car the walk shaping steers toward (or the driven
+    car), whatever slot it is in, so one skill works for every car."""
+    e = ValetParkEnv(render_mode=None, num_clients=2, max_cars=10, arrival_prob=0, exit_prob=0)
+    e.reset(seed=0)
+    assert not _focus_block(e._get_obs()).any(), "focus set with no cars"
+    with _quiet():
+        e._spawn_next(); e._spawn_next()
+    a, b = e.car.sprites()
+    for c in (a, b):
+        c.ClientEntered = True
+    a.rect.center = valet_env.ENTRANCE_REST
+    b.rect.center = (700, 450)
+    p = e.player.sprite
+    p.rect.center = (b.rect.centerx, b.rect.centery + 60)   # standing next to b
+    o = e._get_obs()
+    focus = _focus_block(o)
+    assert np.allclose(focus[:valet_env.SLOT_SIZE], _slot_block(e, o, b))
+    assert np.isclose(focus[-2], (b.rect.centerx - p.rect.centerx) / valet_env.WIDTH)
+    assert np.isclose(focus[-1], (b.rect.centery - p.rect.centery) / valet_env.HEIGHT)
+    p.rect.center = b.rect.center
+    with _quiet():
+        e.step(SPACE)                                        # get into b...
+    assert e.car_selected is b
+    e.player.sprite.rect.center = (a.rect.centerx, a.rect.centery)  # (player is hidden)
+    o = e._get_obs()
+    focus = _focus_block(o)                                  # ...focus stays on b
+    assert np.allclose(focus[:valet_env.SLOT_SIZE], _slot_block(e, o, b))
+    assert np.allclose(focus[-2:], 0.0)                      # offset from itself
+    e.close()
+
+
+def test_obs_slots_are_shuffled_but_stable():
+    seen_first = set()
+    for seed in range(8):
+        e = ValetParkEnv(render_mode=None, num_clients=3, max_cars=10, arrival_prob=0)
+        e.reset(seed=seed)
+        with _quiet():
+            for _ in range(3):
+                e._spawn_next()
+        slots = [e.car_slot[c] for c in e.car.sprites()]
+        assert len(set(slots)) == 3 and all(0 <= s < 10 for s in slots)
+        seen_first.add(slots[0])
+        e.reset(seed=seed)
+        with _quiet():
+            for _ in range(3):
+                e._spawn_next()
+        assert [e.car_slot[c] for c in e.car.sprites()] == slots, "not reproducible"
+        e.close()
+    assert len(seen_first) > 1, "first client always lands in the same slot"
+    e = ValetParkEnv(render_mode=None, num_clients=3, max_cars=10, arrival_prob=0,
+                     shuffle_slots=False)
+    e.reset(seed=0)
+    with _quiet():
+        for _ in range(3):
+            e._spawn_next()
+    assert [e.car_slot[c] for c in e.car.sprites()] == [0, 1, 2]
+    e.close()
+
+
+def test_random_start_stays_in_bounds():
+    starts = set()
+    for seed in range(20):
+        e = ValetParkEnv(render_mode=None, num_clients=1, random_start=True)
+        e.reset(seed=seed)
+        x, y = e.player.sprite.rect.topleft
+        assert 90 <= x <= 1250 and 125 <= y <= 720, (x, y)   # Player.boundaries
+        starts.add((x, y))
+        e.close()
+    assert len(starts) > 10
+    e = ValetParkEnv(render_mode=None, num_clients=1)
+    e.reset(seed=0)
+    assert e.player.sprite.rect.center == (700, 250), "default start changed"
+    e.close()
+
+
+def _two_car_drive(other_center, **kwargs):
+    """Env with the valet driving car `a` (facing right, at (600, 450)) and a stationary
+    car `b` at `other_center`; returns (env, a, b, bump-counter list)."""
+    e = ValetParkEnv(render_mode=None, num_clients=2, arrival_prob=0, exit_prob=0,
+                     frame_skip=1, **kwargs)
+    e.reset(seed=0)
+    with _quiet():
+        e._spawn_next(); e._spawn_next()
+    a, b = e.car.sprites()
+    for c in (a, b):
+        c.ClientEntered = True                      # no arrival animation moving them
+    a.rect.center, b.rect.center = (600, 450), other_center
+    e.player.sprite.rect.center = a.rect.center
+    with _quiet():
+        e.step(SPACE)                               # get into a
+    assert e.car_selected is a
+    bumps = []
+    orig = e._resolve_collisions
+    e._resolve_collisions = lambda: bumps.append(orig()) or bumps[-1]
+    return e, a, b, bumps
+
+
+def _overlapping(a, b):
+    return pygame.sprite.collide_rect_ratio(0.7)(a, b)
+
+
+def test_driving_into_a_car_is_blocked_and_penalized():
+    e, a, b, bumps = _two_car_drive((740, 450))   # 35 px gap ahead of a
+    with _quiet():
+        for _ in range(40):
+            e.step(UP)
+    assert not _overlapping(a, b), "drove into the other car"
+    assert sum(bumps) > 0 and a.rect.centerx > 600, "never moved up to the other car"
+    e.close()
+
+
+def test_holding_against_a_car_is_charged_once():
+    """Regression: the bump penalty used to be charged every tick the car stayed pressed
+    against another, so one stuck episode could score about -4000."""
+    e, a, b, bumps = _two_car_drive((740, 450), reward_shaping=False)
+    total = 0.0
+    with _quiet():
+        for _ in range(60):                          # reach b after ~12 ticks, then push
+            total += e.step(UP)[1]
+    pressed = sum(1 for b in bumps if b)
+    assert pressed > 30, "test setup: car should be pushing for most of the run"
+    expected = (60 * valet_env.STEP_COST + valet_env.COLLISION_PENALTY   # one bump...
+                + pressed * valet_env.PUSH_PENALTY)                      # ...then a small toll
+    assert np.isclose(total, expected), (total, expected)
+    e.close()
+
+
+def test_parking_raises_the_potential_by_park_k():
+    e = ValetParkEnv(render_mode=None, num_clients=1, arrival_prob=0, exit_prob=0)
+    e.reset(seed=0)
+    with _quiet():
+        e._spawn_next()
+    c = e.car.sprites()[0]
+    c.ClientEntered = True
+    c.rect.center = e.spot_xy[c.ParkingSpot]       # unrotated, dead centre of its spot
+    e.player.sprite.rect.center = c.rect.center    # no walk gap either way
+    before = e._potential()
+    c.parked = True
+    assert np.isclose(e._potential() - before, valet_env.PARK_K, atol=0.05)
+    e.close()
+
+
+def test_waiting_cost_starts_at_drop_off():
+    """Regression: clients only cost while waiting *after being called*, and are only called
+    once their car is parked -- so never parking dodged the cost."""
+    e = ValetParkEnv(render_mode=None, num_clients=2, arrival_prob=0, exit_prob=0)
+    e.reset(seed=0)
+    with _quiet():
+        e._spawn_next(); e._spawn_next()             # two unparked cars, nobody called
+    e._phi_prev = e._potential()
+    assert np.isclose(e._shaping_reward(), 2 * valet_env.WAIT_PENALTY)
+    e.close()
+
+
+def test_driving_out_of_the_entrance_does_not_jump():
+    """Regression: arrivals rest at x=40 but driven cars were clamped to x>=90, so the
+    first driven tick threw the car 50 px right (into anything parked there)."""
+    e = ValetParkEnv(render_mode=None, num_clients=1, arrival_prob=0, exit_prob=0, frame_skip=1)
+    e.reset(seed=0)
+    with _quiet():
+        e._spawn_next()
+    c = e.car.sprites()[0]
+    c.rect.topleft = (40, 125)                      # where an arrival comes to rest
+    c.ClientEntered = True
+    e.player.sprite.rect.center = c.rect.center
+    with _quiet():
+        e.step(SPACE)
+        e.step(NOOP)
+    assert e.car_selected is c and c.rect.x == 40, c.rect.x
+    e.close()
+
+
+def test_steering_into_a_car_is_undone():
+    """Rotation is part of the undo: turning in place must not swing the car into another."""
+    e, a, b, bumps = _two_car_drive((600, 510))   # just below a; a turn widens a's box
+    with _quiet():
+        for _ in range(60):
+            e.step(RIGHT)                           # steer in place
+    assert not _overlapping(a, b)
+    assert sum(bumps) > 0, "the turn never reached the other car"
+    assert a.angle != 0, "the car never turned"
+    e.close()
+
+
+def test_car_hit_by_another_is_not_pinned():
+    """Regression: a car that rolled into the driven one (an arrival at the entrance) used
+    to pin it -- every move was undone while they overlapped, at -1 per tick, for up to 7 s."""
+    e, a, b, bumps = _two_car_drive((690, 450))   # b already overlaps a's front
+    assert _overlapping(a, b)
+    with _quiet():
+        for _ in range(15):
+            e.step(DOWN)                            # back away
+    assert not _overlapping(a, b), "driven car could not back out of the overlap"
+    assert sum(bumps) == 0, "penalized for a collision it did not cause"
     e.close()
 
 
@@ -119,7 +327,7 @@ def test_pickup_skips_clients_still_walking_in():
         e.reset(seed=seed)
         with _quiet():
             e._spawn_next(); e._spawn_next()
-        walking, inside = sorted(e.car.sprites(), key=lambda s: e.car_slot[s])
+        walking, inside = e.car.sprites()
         for c in (walking, inside):
             c.rect.center = e.spot_xy[c.ParkingSpot]   # both parked right away
         inside.ClientEntered = True                    # this client is already in the shop
@@ -200,7 +408,7 @@ def test_walk_guidance_ignores_parked_cars():
     e.reset(seed=0)
     with _quiet():
         e._spawn_next(); e._spawn_next()
-    parked, arrival = sorted(e.car.sprites(), key=lambda s: e.car_slot[s])
+    parked, arrival = e.car.sprites()
     for c in (parked, arrival):
         c.ClientEntered = True
     parked.rect.center = e.spot_xy[parked.ParkingSpot]
